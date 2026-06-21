@@ -33,8 +33,7 @@ function _mergeDb(base, local, remote){
   if(!base){
     out.months = _clone(remote.months);
     for(const k in local.months) if(!(k in remote.months)) out.months[k] = _clone(local.months[k]);
-    const ln = (local.lastModified||0) > (remote.lastModified||0);
-    out.settings = _clone(ln ? local.settings : remote.settings);
+    out.settings = _clone(remote.settings);   // 初回同期: settings は必ず remote を採用（ローカルは種子で非権威）
     out.lastModified = Math.max(local.lastModified||0, remote.lastModified||0);
     return out;
   }
