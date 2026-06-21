@@ -1,0 +1,7 @@
+# 絶対にコミットしない（本物の財務データ・秘密情報）
+data.json
+*.token
+.env
+PROJECT_JOURNAL.md   # 開発ログ：本物の数値・氏名・基準を含む → 公開リポジトリに入れない
+data_peek/           # 本物の CSV サンプル
+*.zip                # 本物データを含む zip
