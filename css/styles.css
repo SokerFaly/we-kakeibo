@@ -363,6 +363,9 @@ input{font-family:inherit;color:inherit}
   transition:background .2s var(--ease),border-color .2s var(--ease);
 }
 .finput:focus{border-color:var(--ink);background:#fff}
+/* iOS の日付入力: 値を左寄せにして「中央寄せの大ボタン」っぽさを解消（金額欄と揃える） */
+.finput[type="date"]{text-align:left}
+.finput[type="date"]::-webkit-date-and-time-value{text-align:left;margin:0}
 .frow{display:flex;gap:11px}
 .frow .field{flex:1}
 .computed{
