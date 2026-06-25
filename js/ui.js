@@ -658,15 +658,28 @@ function renderEntry(){
 }
 
 let statFilter="half", statCat=null;
+/* ---------------- 淡彩 環形グラフ (当月の変動費・分類別、零依存 SVG) ---------------- */
+function _donutHtml(k){
+  const mo=db.months[k], cats=mo.categories;
+  const PAL=["#E6B14E","#8FA98E","#CDA088","#A6AFBB","#C9A86A","#9DAE8C","#D4B08C","#B0A99A"];
+  const data=cats.map(c=>({n:c,v:catAmount(k,c),col:PAL[cats.indexOf(c)%PAL.length]})).filter(x=>x.v>0);
+  const total=data.reduce((a,x)=>a+x.v,0);
+  if(total<=0) return '<div class="donut-empty">変動費の記録がまだありません</div>';
+  const R=46, C=2*Math.PI*R, GAP=(data.length>1?4:0);
+  let off=0, segs="";
+  data.forEach(x=>{ const len=x.v/total*C, dash=Math.max(0.01,len-GAP);
+    segs+=`<circle class="ring-seg" cx="60" cy="60" r="${R}" stroke="${x.col}" stroke-width="14" stroke-dasharray="${dash.toFixed(2)} ${(C-dash).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"></circle>`;
+    off+=len; });
+  const leg=data.map(x=>`<div class="li"><span class="sw" style="background:${x.col}"></span>${x.n}<span class="lv num">${fmt(x.v)} · ${Math.round(x.v/total*100)}%</span></div>`).join("");
+  return `<div class="donut-wrap"><div class="donut"><svg viewBox="0 0 120 120" width="150" height="150"><circle class="ring-track" cx="60" cy="60" r="${R}" stroke-width="14"></circle>${segs}</svg><div class="ctr"><div class="cn num">${fmt(total)}</div><div class="cl">変動費</div></div></div><div class="donut-leg">${leg}</div></div>`;
+}
+
 function renderStats(){
   const months=rangeMonths();
   const max=Math.max(1,...months.map(m=>totalSpend(m)));
   const trend=months.map((m,i)=>{ const v=totalSpend(m); const cur=m===active; const[,mm]=m.split("-");
     return `<div class="barrow"><div class="bl">${Number(mm)}月</div><div class="bt"><div class="bf ${cur?'cur':''}" data-w="${Math.max(2,v/max*100)}" style="width:0%;transition-delay:${i*35}ms"></div></div><div class="bv num">${fmtN(v)}</div></div>`; }).join("");
   const cats=db.months[active].categories;
-  const cmax=Math.max(1,...cats.map(c=>catAmount(active,c)));
-  const breakdown=cats.map((c,i)=>{ const v=catAmount(active,c);
-    return `<div class="barrow"><div class="bl">${c}</div><div class="bt"><div class="bf" data-w="${Math.max(2,v/cmax*100)}" style="width:0%;transition-delay:${i*35}ms"></div></div><div class="bv num">${fmtN(v)}</div></div>`; }).join("");
   if(!statCat||!cats.includes(statCat)) statCat=cats[0];
   const catChips=Array.from(new Set(months.flatMap(m=>db.months[m].categories))).map(c=>`<button class="sc ${c===statCat?'on':''}" data-sc="${c}">${c}</button>`).join("");
   const hist=months.filter(m=>m!==active).map(m=>catAmount(m,statCat)).filter(v=>v>0);
@@ -682,7 +695,7 @@ function renderStats(){
       <button class="fil ${statFilter==='half'?'on':''}" data-fil="half">直近6ヶ月</button>
       <button class="fil ${statFilter==='year'?'on':''}" data-fil="year">直近1年</button></div>
     <div class="panel"><div class="ph">月別の総支出 <small>固定+変動</small></div>${trend}</div>
-    <div class="panel"><div class="ph">${labelOf(active)} の分類内訳</div>${breakdown}</div>
+    <div class="panel"><div class="ph">${labelOf(active)} の分類内訳</div>${_donutHtml(active)}</div>
     <div class="panel"><div class="ph">分類の比較 <small>今月 vs 過去の平均</small></div>
       <div class="selcat">${catChips}</div>
       <div class="cmp"><div class="now num"><span class="yen">¥</span>${fmtN(now)}</div>${deltaHtml}</div></div>`;
@@ -715,3 +728,15 @@ function positionTabIndicator(animate){
 }
 window.addEventListener("resize", ()=>positionTabIndicator(false));
 setInterval(()=>{ try{ updateLastmod(); }catch(e){} }, 30000);
+
+/* ---------------- damping press feedback (pointer-driven, document-level so it survives re-renders) ---------------- */
+(function(){
+  var SEL=".iconbtn,.mnav button,.tab,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.balbtn,.addbtn,.sheetbtn,.hrow,.hero";
+  function _down(e){ var el=e.target.closest && e.target.closest(SEL); if(el) el.classList.add("pressing"); }
+  function _up(){ var els=document.querySelectorAll(".pressing"); for(var i=0;i<els.length;i++) els[i].classList.remove("pressing"); }
+  document.addEventListener("pointerdown",_down,{passive:true});
+  document.addEventListener("pointerup",_up,{passive:true});
+  document.addEventListener("pointercancel",_up,{passive:true});
+  document.addEventListener("pointerleave",_up,{passive:true});
+  window.addEventListener("blur",_up);
+})();
