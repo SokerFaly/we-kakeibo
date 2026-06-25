@@ -26,6 +26,82 @@ function updateLastmod(){
   el.innerHTML = '<span class="dot"></span>最終更新 ' + relTime(db.lastModified);
 }
 
+/* ============================================================
+   navigation guards / launch month / jump-to-current  (added)
+   - 起動: 「今日を超えない最新の月」を開く(未来の幽霊月で固定されない)
+   - 「‹」: 最も古い実データ月で停止(誤タップ防止)
+   - 「›」: 当月を超える新規作成は確認してから(誤タップ防止)
+   - 月ラベルのタップ: 当月へ戻る
+   いずれも本ファイル(ui.js)内のみ。storage/compute/main(凍結)は不変。
+   ============================================================ */
+function _nowYM(){ const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+function _isEmptyMonth(m){
+  return !!m && (!m.entries || !m.entries.length)
+    && (!m.categoryTotals || !Object.keys(m.categoryTotals).length)
+    && (!m.fixed || !m.fixed.extra || !m.fixed.extra.length)
+    && !!m.fixed && m.fixed.denki==null && m.fixed.gas==null && m.fixed.water==null && m.fixed.totalDebit==null
+    && !m.hesan;
+}
+function _earliestRealKey(){
+  const keys=Object.keys(db.months).sort();
+  for(const k of keys){ if(!_isEmptyMonth(db.months[k])) return k; }
+  return keys[0]||null;
+}
+function _latestUpToToday(){
+  const now=_nowYM(); if(db.months[now]) return now;
+  const keys=Object.keys(db.months).sort();
+  let pick=null; for(const k of keys){ if(k<=now) pick=k; }
+  return pick || keys[0] || now;
+}
+/* 起動時に active を「今日を超えない最新の月」に固定(main.js の render より前に実行) */
+active=_latestUpToToday();
+
+/* 月ナビの境界: .mnav にキャプチャ段で割り込み、main.js のボタン処理より先に判定 */
+(function bindMonthNavGuards(){
+  const mnav=document.querySelector(".mnav"); if(!mnav) return;
+  mnav.addEventListener("click", function(e){
+    if(e.target.closest("#prev")){
+      const target=shiftMonth(active,-1), floor=_earliestRealKey();
+      if(floor && target<floor && !db.months[target]){
+        e.stopPropagation(); e.preventDefault();
+        _flashMonthLabel("これより前の記録はありません");
+      }
+    } else if(e.target.closest("#next")){
+      const target=shiftMonth(active,1);
+      if(target>_nowYM() && !db.months[target]){
+        e.stopPropagation(); e.preventDefault();
+        _confirmCreateFuture(target);
+      }
+    }
+  }, true);
+}());
+
+/* 当月を超える未来月の新規作成: ボトムシートで確認 */
+function _confirmCreateFuture(target){
+  openSheet('<h2>まだ来ていない月です</h2>'
+    +'<div class="desc">'+labelOf(target)+' はまだ始まっていません。新しい月を作成して移動しますか?</div>'
+    +'<button class="sheetbtn" id="cf-yes">作成して移動</button>'
+    +'<button class="sheetbtn ghost" id="cf-no">やめる</button>');
+  document.getElementById("cf-yes").addEventListener("click", function(){ active=target; ensureMonth(active); closeSheet(); render(); });
+  document.getElementById("cf-no").addEventListener("click", function(){ closeSheet(); });
+}
+
+/* 月ラベルのタップで当月へ戻る */
+(function bindJumpToCurrent(){
+  const lab=document.getElementById("monthlabel"); if(!lab) return;
+  lab.style.cursor="pointer"; lab.title="今月へ";
+  lab.addEventListener("click", function(){ const t=_latestUpToToday(); if(t && t!==active){ active=t; render(); } });
+}());
+
+/* 境界に当たったときの月ラベル軽量ヒント(オーバーレイなし・自動で戻る) */
+let _flashTimer=null;
+function _flashMonthLabel(text){
+  const lab=document.getElementById("monthlabel"); if(!lab) return;
+  lab.textContent=text; lab.style.opacity="0.55";
+  clearTimeout(_flashTimer);
+  _flashTimer=setTimeout(function(){ lab.style.opacity=""; if(typeof renderHeader==="function") renderHeader(); }, 1400);
+}
+
 /* ---------------- motion: spring sampler + WAAPI (no libraries) ---------------- */
 const REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches);
 
