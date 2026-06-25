@@ -333,18 +333,18 @@ input{font-family:inherit;color:inherit}
 }
 .tabind{display:none}
 .tab{
-  flex:1;border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;
-  color:var(--ink-3);padding:8px 0 6px;border-radius:var(--r-pill);position:relative;z-index:1;
+  flex:1;border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:5px;
+  color:var(--ink-3);padding:5px 0 7px;border-radius:var(--r-pill);position:relative;
 }
-.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.7;position:relative;z-index:1}
-.tab span{font-size:10px;letter-spacing:.02em;font-weight:500;position:relative;z-index:1}
+.tic{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.7}
+.tab span{font-size:10px;letter-spacing:.02em;font-weight:500}
 .tab.on{color:var(--accent-ink);font-weight:600}
-.tab.on::before{
-  content:"";position:absolute;top:2px;left:50%;width:46px;height:46px;margin-left:-23px;border-radius:50%;
-  background:var(--surface);z-index:0;
+.tab.on .tic{
+  background:var(--surface);
   box-shadow:var(--sh-1),13px 15px 17px -10px var(--leak),0 0 12px -2px var(--wglow);
 }
-.tab.on svg{stroke:var(--accent);filter:drop-shadow(0 0 9px var(--iglow)) drop-shadow(0 0 4px var(--wglow))}
+.tab.on .tic svg{stroke:var(--accent);filter:drop-shadow(0 0 9px var(--iglow)) drop-shadow(0 0 4px var(--wglow))}
 
 /* ---------- view transitions ---------- */
 .view{display:none}
