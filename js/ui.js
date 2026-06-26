@@ -338,7 +338,7 @@ function openHesan(){
   let initExpr = (mo.hesan && mo.hesan.initAmount!=null) ? String(mo.hesan.initAmount) : "";   // 初期金額の上書き(任意)。空欄=自動(公式値)
   function carry(){ return mo.start!=null?mo.start:0; }                                          // 今月の繰越金(前月繰越)=読み取り専用
   function rowRight(expr){ const v=evalExpr(expr); if(v==null) return '未入力'; return /[+\-*/]/.test(String(expr)) ? fmtN(v) : ''; } // 数値のみ→右は空、式→計算結果
-  function rowHtml(r,i){ return `<div class="hesanrow"><input class="hi hl-edit" data-hl="${i}" value="${r.label}" style="width:80px;border:none;background:none;font-size:12.5px;color:var(--ink);padding:0;flex:none"><input class="hi" data-he="${i}" value="${r.expr||''}" placeholder="例: 5349+890"><span class="he">${rowRight(r.expr)}</span><button class="del" data-del="${i}">×</button></div>`; }
+  function rowHtml(r,i){ return `<div class="hesanrow"><input class="hi hl-edit" data-hl="${i}" value="${r.label}"><input class="hi" data-he="${i}" value="${r.expr||''}" placeholder="例: 5349+890"><span class="he">${rowRight(r.expr)}</span><button class="del" data-del="${i}">×</button></div>`; }
   function calcTotal(){ let t=0; defRows.forEach(r=>{ const v=evalExpr(r.expr); if(v!=null) t+=v; }); return t; }
   function initSuggest(total){ const yz=evalExpr(yzExpr); return yz==null?null:Math.round(total-yz); } // 初期金額 = 今月の繰越金 ＋ 差額 = 実際 − 相手残高
   function diffHtml(total){
@@ -572,7 +572,7 @@ function renderOverview(){
     const left=new Date(ry,rm,0).getDate()-new Date().getDate();
     if(left>=0 && left<=7){
       const msg=left>0?`月末まで あと ${left} 日 — 精算をしてお金を合わせましょう`:`今日は月末です。精算をしましょう`;
-      remind=`<div class="carrynote" id="monthend-remind" style="cursor:pointer"><div>${msg}</div><div style="font-size:18px;color:var(--clay);line-height:1">›</div></div>`;
+      remind=`<div class="carrynote remind-only"><div>${msg}</div></div>`;
     }
   }
   const fixedRows=`
@@ -609,7 +609,6 @@ function renderOverview(){
     </div>`;
   const heroEl=document.getElementById("hero-amt");
   if(heroEl){ if(_heroPrev!==null && _heroPrev!==Math.round(bal)) rollNumber(heroEl,_heroPrev,Math.round(bal)); _heroPrev=Math.round(bal); }
-  document.getElementById("monthend-remind")?.addEventListener("click",openHesan);
   document.getElementById("edit-varcats")?.addEventListener("click",()=>editVarCats());
 }
 let _heroPrev=null;
@@ -641,7 +640,7 @@ function renderEntry(){
   document.getElementById("v-entry").innerHTML=`
     <div class="quickadd"><div class="qh">支出を追加</div>
       <div class="chips" id="chips">${chips}</div>
-      <div style="margin:2px 0 10px"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}" style="font-size:14px"></div>
+      <div style="margin:2px 0 10px"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}"></div>
       <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="amtin" placeholder="0"></div>
         <div class="cash-toggle" id="cashtog"><div class="switch"></div>現金</div></div>
       <button class="addbtn" id="quick-add">追加する</button></div>
@@ -704,13 +703,25 @@ function renderStats(){
   document.querySelectorAll("[data-sc]").forEach(b=>b.addEventListener("click",()=>{ statCat=b.dataset.sc; renderStats(); }));
 }
 
+let _histOpenYears=null;   // 展開中の年の集合。null = 初回に「activeの年」を開く
 function renderHistory(){
-  const all=monthsAsc().reverse(); let html=""; let curYear=null;
-  all.forEach(k=>{ const[y]=k.split("-"); if(y!==curYear){ curYear=y; html+=`<div class="yr">${y}</div>`; }
-    const[,m]=k.split("-"); const mo=db.months[k];
-    const tag=mo.migrated?(mo.entries&&mo.entries.length?'':'<small>移行データ・合計のみ</small>'):'<small>日次記帳</small>';
-    html+=`<div class="hrow ${k===active?'active':''}" data-go="${k}"><div class="m">${Number(m)}月 ${tag}</div><div class="bal"><div class="b num">${fmt(balance(k))}</div><div class="bl">残高</div></div></div>`; });
-  document.getElementById("v-history").innerHTML=`<div class="hist">${html}<div class="foot">全 ${all.length} ヶ月 · タップで開いて編集できます</div></div>`;
+  const all=monthsAsc().reverse();
+  const byYear={}, yearOrder=[];
+  all.forEach(k=>{ const y=k.split("-")[0]; if(!byYear[y]){ byYear[y]=[]; yearOrder.push(y); } byYear[y].push(k); });
+  if(_histOpenYears===null){ _histOpenYears=new Set(); const ay=active.split("-")[0]; _histOpenYears.add(byYear[ay]?ay:(yearOrder[0]||ay)); }
+  let html="";
+  yearOrder.forEach(y=>{
+    const keys=byYear[y], open=_histOpenYears.has(y), latest=keys[0];   // keys降順 → [0]がその年の最新月
+    const summary=`${keys.length}ヶ月 · 残高 ${fmt(balance(latest))}`;
+    html+=`<div class="yr ${open?'open':''}" data-yr="${y}"><div class="yl"><span class="chev">›</span><span class="yy">${y}</span></div><div class="ys">${summary}</div></div>`;
+    const rows=keys.map(k=>{ const m=k.split("-")[1]; const mo=db.months[k];
+      const tag=mo.migrated?(mo.entries&&mo.entries.length?'':'<small>移行データ・合計のみ</small>'):'<small>日次記帳</small>';
+      return `<div class="hrow ${k===active?'active':''}" data-go="${k}"><div class="m">${Number(m)}月 ${tag}</div><div class="bal"><div class="b num">${fmt(balance(k))}</div><div class="bl">残高</div></div></div>`;
+    }).join("");
+    html+=`<div class="yr-body ${open?'open':''}" data-yrbody="${y}">${rows}</div>`;
+  });
+  document.getElementById("v-history").innerHTML=`<div class="hist">${html}<div class="foot">全 ${all.length} ヶ月 · 年をタップで開閉 / 月をタップで編集</div></div>`;
+  document.querySelectorAll("[data-yr]").forEach(h=>h.addEventListener("click",()=>{ const y=h.dataset.yr; if(_histOpenYears.has(y)) _histOpenYears.delete(y); else _histOpenYears.add(y); renderHistory(); }));
   document.querySelectorAll("[data-go]").forEach(r=>r.addEventListener("click",()=>{ active=r.dataset.go; switchTab("overview"); }));
 }
 
