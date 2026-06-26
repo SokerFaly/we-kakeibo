@@ -48,6 +48,11 @@
 
   --pad:18px;
 
+  /* 調整用パラメータ: 精算行のレイアウト & 日付フォント（値を変えれば微調整できます） */
+  --he-w:56px;      /* 精算: 「未入力」欄の幅 */
+  --hrow-gap:6px;   /* 精算: 行内の間隔 */
+  --date-fs:18px;   /* 記帳/編集: 日付の文字サイズ */
+
   /* spring easings (damping) */
   --spring:cubic-bezier(.34,1.32,.5,1);
   --spring-sm:cubic-bezier(.34,1.45,.6,1);
@@ -103,12 +108,12 @@ input{font-family:inherit;color:inherit}
 }
 .brand{font-size:12px;letter-spacing:.22em;color:var(--ink-3);font-weight:600}
 .brand b{color:var(--ink);font-weight:700;letter-spacing:.06em}
-.topicons{display:flex;gap:8px}
+.topicons{display:flex;gap:6px}
 .lastmod{font-size:11.5px;color:var(--ink-3);display:flex;align-items:center;gap:7px;letter-spacing:.01em}
 .lastmod .dot{width:6px;height:6px;border-radius:50%;background:var(--sage);flex-shrink:0}
 .lastmod:empty{display:none}
 .iconbtn{
-  width:40px;height:40px;border:none;cursor:pointer;border-radius:var(--r-pill);
+  width:36px;height:36px;border:none;cursor:pointer;border-radius:var(--r-pill);
   color:var(--ink-2);display:flex;align-items:center;justify-content:center;
   background:var(--surface);box-shadow:var(--sh-1);
 }
@@ -117,7 +122,7 @@ input{font-family:inherit;color:inherit}
 
 /* ---------- month switcher ---------- */
 .month{padding:2px 22px 2px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center}
-.mnav{display:flex;align-items:center;justify-content:center;gap:14px}
+.mnav{display:flex;align-items:center;justify-content:center;gap:12px}
 .month .topicons{justify-self:end}
 .mnav button{
   width:36px;height:36px;border:none;cursor:pointer;color:var(--ink-2);
@@ -125,7 +130,7 @@ input{font-family:inherit;color:inherit}
   display:flex;align-items:center;justify-content:center;line-height:1;
 }
 .mnav button:hover{color:var(--ink)}
-.month h1{font-size:17px;font-weight:600;letter-spacing:.01em;min-width:150px;text-align:center;cursor:pointer}
+.month h1{font-size:17px;font-weight:600;letter-spacing:.01em;min-width:110px;text-align:center;cursor:pointer}
 
 /* ---------- signature: month rhythm (concave groove) ---------- */
 .rhythm{padding:16px 24px 2px}
@@ -164,7 +169,7 @@ input{font-family:inherit;color:inherit}
   padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;
   box-shadow:var(--sh-2);cursor:pointer;text-align:left;
 }
-.balbtn .txt{font-size:13px;line-height:1.5;color:var(--ink-2)}
+.balbtn .txt{flex:1;text-align:center;font-size:13px;line-height:1.5;color:var(--ink-2)}
 .balbtn .txt b{font-weight:700;color:var(--ink)}
 .balbtn .go{font-size:20px;color:var(--accent-ink);flex-shrink:0;font-weight:700}
 
@@ -175,6 +180,7 @@ input{font-family:inherit;color:inherit}
   display:flex;align-items:center;justify-content:between;gap:12px;
   justify-content:space-between;box-shadow:var(--sh-1);
 }
+.carrynote.remind-only{justify-content:center;text-align:center}
 .carrynote button{
   flex-shrink:0;font-size:12px;font-weight:600;border:none;background:var(--accent-grad);color:var(--accent-ink);
   border-radius:var(--r-pill);padding:8px 14px;cursor:pointer;box-shadow:0 0 12px -2px var(--iglow);
@@ -308,8 +314,15 @@ input{font-family:inherit;color:inherit}
 
 /* ---------- 履歴 ---------- */
 .hist{padding:12px 18px}
-.hist .yr{font-size:11.5px;color:var(--ink-3);letter-spacing:.14em;margin:18px 6px 10px;font-weight:600}
+.hist .yr{display:flex;align-items:center;justify-content:space-between;cursor:pointer;margin:18px 6px 10px;user-select:none}
 .hist .yr:first-child{margin-top:4px}
+.hist .yr .yl{display:flex;align-items:center;gap:7px}
+.hist .yr .chev{display:inline-block;font-size:15px;line-height:1;color:var(--ink-3);transform:rotate(0deg);transition:transform .22s var(--ease)}
+.hist .yr.open .chev{transform:rotate(90deg)}
+.hist .yr .yy{font-size:12.5px;color:var(--ink-3);letter-spacing:.14em;font-weight:700}
+.hist .yr .ys{font-size:11px;color:var(--ink-3);letter-spacing:.02em;font-weight:500;font-variant-numeric:tabular-nums}
+.hist .yr-body{display:none}
+.hist .yr-body.open{display:block}
 .hrow{
   background:var(--surface);border-radius:var(--r);box-shadow:var(--sh-1);border:none;
   padding:15px 18px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;
@@ -384,7 +397,7 @@ input{font-family:inherit;color:inherit}
   box-shadow:var(--inset);transition:box-shadow .2s var(--ease);
 }
 .finput:focus{box-shadow:var(--inset),0 0 0 2px var(--accent)}
-.finput[type="date"]{-webkit-appearance:none;appearance:none;text-align:center;border-radius:var(--r)}
+.finput[type="date"]{-webkit-appearance:none;appearance:none;text-align:center;border-radius:var(--r);font-size:var(--date-fs);font-weight:600}
 .finput[type="date"]::-webkit-date-and-time-value{text-align:center}
 .frow{display:flex;gap:11px}
 .frow .field{flex:1}
@@ -392,11 +405,12 @@ input{font-family:inherit;color:inherit}
   background:var(--accent-soft);border-radius:var(--r-sm);padding:13px 15px;font-size:14px;color:var(--accent-ink);
   display:flex;justify-content:space-between;align-items:center;font-weight:700;
 }
-.hesanrow{display:flex;gap:9px;align-items:center;margin-bottom:10px}
+.hesanrow{display:flex;gap:var(--hrow-gap);align-items:center;margin-bottom:10px}
 .hesanrow .hl{width:80px;flex-shrink:0;font-size:12.5px;color:var(--ink)}
 .hesanrow .hi{flex:1;min-width:0;border:none;background:var(--bg);border-radius:var(--r-sm);padding:11px 13px;font-size:14px;outline:none;color:var(--ink);box-shadow:var(--inset);transition:box-shadow .2s var(--ease)}
 .hesanrow .hi:focus{box-shadow:var(--inset),0 0 0 2px var(--accent)}
-.hesanrow .he{width:80px;text-align:right;font-size:13px;color:var(--ink-2);flex-shrink:0;font-variant-numeric:tabular-nums}
+.hesanrow .hl-edit{background:none}
+.hesanrow .he{width:var(--he-w);text-align:right;font-size:13px;color:var(--ink-2);flex-shrink:0;font-variant-numeric:tabular-nums}
 .del{flex:none;width:27px;height:27px;border-radius:50%;border:none;background:transparent;color:var(--ink-3);cursor:pointer;font-size:15px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
 .del:hover,.del:active{background:var(--clay-soft);color:var(--clay)}
 .htotal{display:flex;justify-content:space-between;align-items:center;padding:14px 2px;border-top:1px solid var(--hair);margin-top:6px;font-weight:700;font-size:14px}
