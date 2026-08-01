@@ -305,14 +305,21 @@ function editVarCats(reassignCat){
     }
     return `<div class="frow" style="align-items:center;margin-bottom:13px"><span style="flex:1;font-size:14.5px;color:var(--ink)">${cat}</span><button class="del" data-rmcat="${cat}">×</button></div>`;
   }).join("");
+  /* 過去に使った分類(今月に無いもの)をワンタップで復用できる候補。
+     手打ちだと「お見舞い/おみまい」のような表記ゆれが生まれ、過去との比較が切れる。
+     候補タップ = 同じ文字列の再利用なので、表記が必ず一致し比較が自動で繋がる。 */
+  const pastCats=Array.from(new Set(monthsAsc().flatMap(m=>db.months[m].categories||[]))).filter(c=>!mo.categories.includes(c));
+  const pastHtml=pastCats.length?`<div class="vc-past" id="vc-past" style="display:none"><div class="vc-past-h">過去に使った分類(タップで追加・表記ゆれ防止)</div><div class="chips">${pastCats.map(c=>`<button class="chip" data-past="${c}">${c}</button>`).join("")}</div></div>`:"";
   openSheet(`<h2>変動費の分類</h2>
     <div class="desc">この月の大分類です。元の5つは固定。新しい分類を追加・削除できます。合計は記帳から自動集計され、翌月は5つに戻ります。</div>
     ${rows}
     <button class="addrow" id="vc-add">+ 変動費の分類を追加</button>
+    ${pastHtml}
     <input class="finput" id="vc-newcat" placeholder="新しい分類名" style="display:none;margin-top:8px">
     <button class="sheetbtn" id="vc-done" style="margin-top:14px">完了</button>`);
   const newcat=document.getElementById("vc-newcat");
-  document.getElementById("vc-add").addEventListener("click",()=>{ newcat.style.display="block"; newcat.focus(); });
+  document.getElementById("vc-add").addEventListener("click",()=>{ const pp=document.getElementById("vc-past"); if(pp) pp.style.display="block"; newcat.style.display="block"; newcat.focus(); });
+  document.querySelectorAll('[data-past]').forEach(b=>b.addEventListener("click",()=>{ const mo=db.months[k0]; const c=b.dataset.past; if(!mo.categories.includes(c)){ mo.categories.push(c); save(); } editVarCats(); }));
   /* 入力欄に残っている分類名を確定する(再描画はしない)。
      「完了」ボタンやシートを下に閉じた時に、打ち込んだ名前が消えるのを防ぐ。 */
   const flushNewCat=()=>{ const mo=db.months[k0]; const n=newcat.value.trim(); newcat.value=""; if(n && !mo.categories.includes(n)){ mo.categories.push(n); save(); return true; } return false; };
@@ -813,16 +820,25 @@ function renderStats(){
   const max=Math.max(1,...months.map(m=>totalSpend(m)));
   const trend=months.map((m,i)=>{ const v=totalSpend(m); const cur=m===active; const[,mm]=m.split("-");
     return `<div class="barrow"><div class="bl">${Number(mm)}月</div><div class="bt"><div class="bf ${cur?'cur':''}" data-w="${Math.max(2,v/max*100)}" style="width:0%;transition-delay:${i*35}ms"></div></div><div class="bv num">${fmtN(v)}</div></div>`; }).join("");
+  /* 比較のボタンは「今の月の分類」だけを出す。
+     - 区間の全分類の合併だと、一度だけ使った分類(例: 2026-05 のお見舞い)が
+       ずっと居座る上、選択チェックが当月基準なので押しても弾かれていた(旧バグ)。
+     - 今月その分類を再び使えば、その月から自動でここに現れ、過去と比較できる。 */
   const cats=db.months[active].categories;
-  if(!statCat||!cats.includes(statCat)) statCat=cats[0];
-  const catChips=Array.from(new Set(months.flatMap(m=>db.months[m].categories))).map(c=>`<button class="sc ${c===statCat?'on':''}" data-sc="${c}">${c}</button>`).join("");
-  const hist=months.filter(m=>m!==active).map(m=>catAmount(m,statCat)).filter(v=>v>0);
-  const avg=hist.length?hist.reduce((a,v)=>a+v,0)/hist.length:0;
-  const now=catAmount(active,statCat);
-  let deltaHtml="";
-  if(avg>0){ const pct=Math.round((now-avg)/avg*100); const up=pct>0;
-    deltaHtml=`<div class="delta ${up?'up':'down'}">${up?'▲':'▼'} 平均より ${Math.abs(pct)}% ${up?'高い':'低い'}</div><div class="base">${statFilter==="half"?"直近6ヶ月":"直近1年"}の平均 ${fmt(avg)}(${hist.length}ヶ月)</div>`; }
-  else deltaHtml=`<div class="base">比較できる過去データがありません</div>`;
+  const noCats=!cats.length;                                     // 2024-10(引越しアーカイブ月)は分類が無い
+  if(!noCats && (!statCat||!cats.includes(statCat))) statCat=cats[0];
+  const catChips=noCats?"":cats.map(c=>`<button class="sc ${c===statCat?'on':''}" data-sc="${c}">${c}</button>`).join("");
+  let now=0, deltaHtml="";
+  if(noCats){
+    deltaHtml=`<div class="base">この月には分類がありません</div>`;
+  } else {
+    const hist=months.filter(m=>m!==active).map(m=>catAmount(m,statCat)).filter(v=>v>0);
+    const avg=hist.length?hist.reduce((a,v)=>a+v,0)/hist.length:0;
+    now=catAmount(active,statCat);
+    if(avg>0){ const pct=Math.round((now-avg)/avg*100); const up=pct>0;
+      deltaHtml=`<div class="delta ${up?'up':'down'}">${up?'▲':'▼'} 平均より ${Math.abs(pct)}% ${up?'高い':'低い'}</div><div class="base">${statFilter==="half"?"直近6ヶ月":"直近1年"}の平均 ${fmt(avg)}(${hist.length}ヶ月)</div>`; }
+    else deltaHtml=`<div class="base">比較できる過去データがありません</div>`;
+  }
 
   document.getElementById("v-stats").innerHTML=`
     <div class="filters">
@@ -832,7 +848,7 @@ function renderStats(){
     <div class="panel"><div class="ph">${labelOf(active)} の分類内訳</div>${_donutHtml(active)}</div>
     <div class="panel"><div class="ph">分類の比較 <small>今月 vs 過去の平均</small></div>
       <div class="selcat">${catChips}</div>
-      <div class="cmp"><div class="now num"><span class="yen">¥</span>${fmtN(now)}</div>${deltaHtml}</div></div>`;
+      <div class="cmp">${noCats?'':`<div class="now num"><span class="yen">¥</span>${fmtN(now)}</div>`}${deltaHtml}</div></div>`;
   requestAnimationFrame(()=>document.querySelectorAll("#v-stats .bf").forEach(b=>{ if(b.dataset.w) b.style.width=b.dataset.w+"%"; }));
   document.querySelectorAll("[data-fil]").forEach(b=>b.addEventListener("click",()=>{ statFilter=b.dataset.fil; renderStats(); }));
   document.querySelectorAll("[data-sc]").forEach(b=>b.addEventListener("click",()=>{ statCat=b.dataset.sc; renderStats(); }));
