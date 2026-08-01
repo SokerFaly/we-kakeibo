@@ -66,7 +66,8 @@ if (typeof module !== "undefined" && module.exports){
 /* ============================ ブラウザでのみ実行 ============================ */
 if (typeof document !== "undefined") (function(){
   const LS = { token:"we_kakeibo_gh_token", owner:"we_kakeibo_gh_owner",
-               repo:"we_kakeibo_gh_repo", path:"we_kakeibo_gh_path", sha:"we_kakeibo_gh_sha" };
+               repo:"we_kakeibo_gh_repo", path:"we_kakeibo_gh_path", sha:"we_kakeibo_gh_sha",
+               draftSha:"we_kakeibo_gh_draft_sha" };
   const ls    = (k)=>{ try{ return localStorage.getItem(k)||""; }catch(_){ return ""; } };
   const lsSet = (k,v)=>{ try{ localStorage.setItem(k,v); }catch(_){ } };
   const lsDel = (k)=>{ try{ localStorage.removeItem(k); }catch(_){ } };
@@ -85,7 +86,9 @@ if (typeof document !== "undefined") (function(){
   }
 
   /* ---- GitHub contents API ---- */
-  function apiUrl(){ const c=cfg(); return "https://api.github.com/repos/"+c.owner+"/"+c.repo+"/contents/"+c.path.split("/").map(encodeURIComponent).join("/"); }
+  function apiUrlFor(p){ const c=cfg(); return "https://api.github.com/repos/"+c.owner+"/"+c.repo+"/contents/"+p.split("/").map(encodeURIComponent).join("/"); }
+  function apiUrl(){ return apiUrlFor(cfg().path); }
+  function draftFile(){ const p=cfg().path||"data.json"; return p.replace(/[^\/]*$/,"")+"draft.json"; }
   function headers(){ const c=cfg(); return { "Authorization":"Bearer "+c.token, "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28" }; }
   async function ghGet(){
     const res = await fetch(apiUrl(), { headers:headers(), cache:"no-store" });
@@ -204,13 +207,62 @@ if (typeof document !== "undefined") (function(){
   if(_btn) _btn.addEventListener("click", ()=>{ requestAnimationFrame(()=>{ if(document.getElementById("s-save")) injectSyncUI(); }); });
 
   /* ---- フォーカス/可視化/復線でプル（相手の更新を取り込む・スロットル） ---- */
-  function maybePull(){ if(!configured()) return; if(Date.now()-lastPullAt < 4000) return; pull(); }
+  function editingOpen(){ return (typeof _sheetOpen!=="undefined" && _sheetOpen) || (typeof _hesanOpen!=="undefined" && _hesanOpen); }
+  function maybePull(){ if(!configured()) return; if(editingOpen()) return; if(Date.now()-lastPullAt < 4000) return; pull(); }
   document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") maybePull(); });
   window.addEventListener("focus", maybePull);
-  window.addEventListener("online", ()=>{ if(configured()) pull(); });
+  window.addEventListener("online", ()=>{ if(configured() && !editingOpen()) pull(); });
+  window._syncResume = maybePull;                      // シート/精算を閉じた時に ui.js が呼ぶ
 
   /* ---- 起動時に一度プル（初期描画の後） ---- */
   setTimeout(()=>{ if(configured()) pull(); else setStatus("idle"); }, 0);
+
+  /* ---- 下書き draft.json(記帳データと別ファイル・1 枠のみ・全置換) ---- */
+  async function ghGetDraft(){
+    const res = await fetch(apiUrlFor(draftFile()), { headers:headers(), cache:"no-store" });
+    if(res.status===404) return { exists:false };
+    if(res.status===401 || res.status===403){ const e=new Error("auth"); e.code="auth"; throw e; }
+    if(!res.ok) throw new Error("GET draft "+res.status);
+    const j = await res.json();
+    return { exists:true, sha:j.sha, data: JSON.parse(_b64decode(j.content)) };
+  }
+  async function ghPutDraft(obj, sha){
+    const body = { message:"We家計簿 下書き "+new Date().toISOString(), content:_b64encode(JSON.stringify(obj,null,2)) };
+    if(sha) body.sha = sha;
+    const res = await fetch(apiUrlFor(draftFile()), { method:"PUT", headers:Object.assign({"Content-Type":"application/json"}, headers()), body:JSON.stringify(body) });
+    if(res.status===409) return { conflict:true };
+    if(res.status===401 || res.status===403){ const e=new Error("auth"); e.code="auth"; throw e; }
+    if(!res.ok) throw new Error("PUT draft "+res.status);
+    const j = await res.json();
+    return { sha: j.content && j.content.sha };
+  }
+  window._draftSync = {
+    /* 取得: {ok, draft|null}。404 = 下書きなし。失敗は ok:false(ローカル維持) */
+    pull: async function(){
+      if(!configured()) return { ok:false };
+      try{
+        const r = await ghGetDraft();
+        if(!r.exists) return { ok:true, draft:null };
+        lsSet(LS.draftSha, r.sha);
+        return { ok:true, draft:r.data };
+      }catch(e){ return { ok:false }; }
+    },
+    /* 保存: draft(null = 削除の印)。sha 競合は取り直して 1 回だけ再試行 */
+    push: async function(draft){
+      if(!configured()) return false;
+      const obj = draft || { month:null, rows:[], yeonZan:"", initAmount:"", savedAt:Date.now() };
+      try{
+        let r = await ghPutDraft(obj, ls(LS.draftSha)||null);
+        if(r.conflict){
+          const g = await ghGetDraft().catch(()=>null);
+          r = await ghPutDraft(obj, (g && g.sha) || null);
+          if(r.conflict) return false;
+        }
+        lsSet(LS.draftSha, r.sha||"");
+        return true;
+      }catch(e){ return false; }
+    }
+  };
 
   /* ---- デバッグ用ハンドル ---- */
   window.WeSync = { pull, push:pushNow, cfg, status:()=>STATUS };

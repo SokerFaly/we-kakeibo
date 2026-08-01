@@ -93,6 +93,14 @@ function _confirmCreateFuture(target){
   lab.addEventListener("click", function(){ const t=_latestUpToToday(); if(t && t!==active){ active=t; render(); } });
 }());
 
+/* 旧仕様の下書き(mo.hesan)を見つけ次第すべて削除する。
+   新仕様では下書きは draft.json / localStorage のみで、記帳データには置かない。
+   pull で古い hesan が戻ってきても、次の描画で再び剥がして押し返す(両端末が更新後に収束)。 */
+function _stripHesan(){ let n=0;
+  for(const k in db.months){ const m=db.months[k];
+    if(m && Object.prototype.hasOwnProperty.call(m,"hesan")){ delete m.hesan; n++; } }
+  return n; }
+
 /* 境界に当たったときの月ラベル軽量ヒント(オーバーレイなし・自動で戻る) */
 let _flashTimer=null;
 function _flashMonthLabel(text){
@@ -118,7 +126,6 @@ function springSample(stiffness, damping, mass){
 }
 // presets tuned to the brief (stiffness 260–380 / damping 24–34 / mass 0.8–1.1)
 const SP_SHEET = springSample(320, 30, 1.0);   // sheet settle — barely any overshoot
-const SP_TAB   = springSample(340, 26, 0.9);   // tab indicator — a touch springier
 
 // animate a transform along a spring (interruptible); build(value)->transform string
 function springAnim(el, build, p0, p1, preset, onDone){
@@ -150,6 +157,7 @@ let _onSheetClose = null;
 function closeSheet(){
   if(!_sheetOpen) return; _sheetOpen = false;
   if(_onSheetClose){ const cb=_onSheetClose; _onSheetClose=null; try{ cb(); }catch(e){} }
+  if(window._syncResume) setTimeout(window._syncResume, 400);
   if(REDUCED || !sheet.animate){ overlay.classList.remove("on"); sheet.innerHTML = ""; return; }
   sheet.style.transition = "transform .34s cubic-bezier(.4,0,1,1)";
   sheet.style.transform = "translateY(106%)";
@@ -198,7 +206,8 @@ function rollNumber(el, from, to){
 
 /* ---------------- editors (logic verbatim; restyled markup) ---------------- */
 function editFixed(){
-  const f=db.months[active].fixed;
+  const k0=active;                                  // 開いた月のキーだけ保持(オブジェクト参照は保持しない)
+  const f=db.months[k0].fixed;                      // 表示用スナップショット
   let extraHtml=(f.extra||[]).map((x,i)=>`<div class="frow" style="align-items:flex-end;margin-bottom:14px"><div class="field" style="margin-bottom:0"><label>その他の名前</label><input class="finput" data-ex="name" data-i="${i}" value="${x.name||""}"></div><div class="field" style="margin-bottom:0"><label>金額</label><input class="finput num" data-ex="amount" data-i="${i}" inputmode="numeric" value="${x.amount!=null?x.amount:""}"></div><button class="del" data-rmex="${i}" style="margin-bottom:10px">×</button></div>`).join("");
   openSheet(`<h2>固定費の編集</h2>
     <div class="desc">賃料・管理費は自動入力(変更可)。「引き落とし総額」と「電気」を入れると保証料を自動で逆算します。ガス・水道は手入力。</div>
@@ -221,14 +230,16 @@ function editFixed(){
   function g(id){ const e=document.getElementById(id); return e?e.value:""; }
   ["f-total","f-denki","f-rent","f-mgmt"].forEach(id=>document.getElementById(id).addEventListener("input",recompute));
   recompute();
-  function snap(){ f.rent=evalExpr(g("f-rent")); f.mgmt=evalExpr(g("f-mgmt")); f.totalDebit=evalExpr(g("f-total")); f.denki=evalExpr(g("f-denki")); f.gas=evalExpr(g("f-gas")); f.water=evalExpr(g("f-water")); document.querySelectorAll('[data-ex]').forEach(inp=>{ const i=+inp.dataset.i,kk=inp.dataset.ex; if(f.extra[i]) f.extra[i][kk]= kk==="amount"?evalExpr(inp.value):inp.value; }); }
-  document.getElementById("f-addextra").addEventListener("click",()=>{ f.extra=f.extra||[]; snap(); f.extra.push({name:"",amount:null}); editFixedReopen(); });
-  document.querySelectorAll('[data-rmex]').forEach(b=>b.addEventListener("click",()=>{ snap(); f.extra.splice(+b.dataset.rmex,1); editFixedReopen(); }));
+  function snap(){ const f=db.months[k0].fixed;  // 書き込みは常に生きている月へ
+    f.rent=evalExpr(g("f-rent")); f.mgmt=evalExpr(g("f-mgmt")); f.totalDebit=evalExpr(g("f-total")); f.denki=evalExpr(g("f-denki")); f.gas=evalExpr(g("f-gas")); f.water=evalExpr(g("f-water")); document.querySelectorAll('[data-ex]').forEach(inp=>{ const i=+inp.dataset.i,kk=inp.dataset.ex; if(f.extra[i]) f.extra[i][kk]= kk==="amount"?evalExpr(inp.value):inp.value; }); }
+  document.getElementById("f-addextra").addEventListener("click",()=>{ const f=db.months[k0].fixed; f.extra=f.extra||[]; snap(); f.extra.push({name:"",amount:null}); editFixedReopen(); });
+  document.querySelectorAll('[data-rmex]').forEach(b=>b.addEventListener("click",()=>{ const f=db.months[k0].fixed; snap(); f.extra.splice(+b.dataset.rmex,1); editFixedReopen(); }));
   document.getElementById("f-save").addEventListener("click",()=>{
+    const f=db.months[k0].fixed;                    // 保存の瞬間に取り直す(同期で db が入れ替わっても生きている方に書く)
     f.rent=evalExpr(g("f-rent")); f.mgmt=evalExpr(g("f-mgmt")); f.totalDebit=evalExpr(g("f-total"));
     f.denki=evalExpr(g("f-denki")); f.gas=evalExpr(g("f-gas")); f.water=evalExpr(g("f-water"));
     document.querySelectorAll('[data-ex]').forEach(inp=>{
-      const i=+inp.dataset.i, k=inp.dataset.ex; if(!f.extra[i]) return;
+      const i=+inp.dataset.i, k=inp.dataset.ex; f.extra=f.extra||[]; if(!f.extra[i]) return;
       f.extra[i][k]= k==="amount"?evalExpr(inp.value):inp.value;
     });
     f.extra=(f.extra||[]).filter(x=>x.name||x.amount!=null);
@@ -238,7 +249,8 @@ function editFixed(){
 function editFixedReopen(){ editFixed(); }
 
 function editIncome(){
-  const mo=db.months[active];
+  const k0=active;
+  const mo=db.months[k0];
   let rows=mo.income.map((i,idx)=>`<div class="frow"><div class="field"><label>名前</label><input class="finput" data-in="who" data-i="${idx}" value="${i.who}"></div><div class="field"><label>入金額</label><input class="finput num" data-in="amount" data-i="${idx}" inputmode="numeric" value="${i.amount!=null?i.amount:""}"></div></div>`).join("");
   openSheet(`<h2>入金 / 繰越金の編集</h2>
     <div class="desc">「今月の繰越金」は通常は精算で設定しますが、ここでも直接変更できます。</div>
@@ -246,36 +258,43 @@ function editIncome(){
     <div style="height:6px"></div>${rows}
     <button class="sheetbtn" id="i-save">保存</button>`);
   document.getElementById("i-save").addEventListener("click",()=>{
+    const mo=db.months[k0];                          // 保存の瞬間に取り直す
     mo.start=evalExpr(document.getElementById("i-start").value)||0;
-    document.querySelectorAll('[data-in]').forEach(inp=>{ const i=+inp.dataset.i,k=inp.dataset.in; mo.income[i][k]= k==="amount"?(evalExpr(inp.value)||0):inp.value; });
+    document.querySelectorAll('[data-in]').forEach(inp=>{ const i=+inp.dataset.i,k=inp.dataset.in; if(mo.income[i]) mo.income[i][k]= k==="amount"?(evalExpr(inp.value)||0):inp.value; });
     save(); closeSheet(); render();
   });
 }
 function editCash(){
-  const c=db.months[active].cash||{start:0,deposit:0}; db.months[active].cash=c;
+  const k0=active;
+  const c=db.months[k0].cash||{start:0,deposit:0};   // 表示用。開いただけでは db に書かない
   openSheet(`<h2>現金の編集</h2>
     <div class="desc">現金だけを管理するサブ台帳です。日々の「現金で払った額」は記帳の現金タグから自動集計されます。</div>
     <div class="field"><label>先月の現金残</label><input class="finput num" id="c-start" inputmode="numeric" value="${c.start!=null?c.start:""}"></div>
     <div class="field"><label>今月の引き出し額</label><input class="finput num" id="c-dep" inputmode="numeric" value="${c.deposit!=null?c.deposit:""}"></div>
     <button class="sheetbtn" id="c-save">保存</button>`);
   document.getElementById("c-save").addEventListener("click",()=>{
-    c.start=evalExpr(document.getElementById("c-start").value)||0; c.deposit=evalExpr(document.getElementById("c-dep").value)||0;
+    const mo=db.months[k0]; const cc=mo.cash||(mo.cash={start:0,deposit:0});   // 保存の瞬間に取り直す
+    cc.start=evalExpr(document.getElementById("c-start").value)||0; cc.deposit=evalExpr(document.getElementById("c-dep").value)||0;
     save(); closeSheet(); render();
   });
 }
 function editVarTotals(){
-  const mo=db.months[active];
+  const k0=active;
+  const mo=db.months[k0];
   let rows=mo.categories.map(cat=>`<div class="frow"><div class="field"><label>${cat}</label><input class="finput num" data-ct="${cat}" inputmode="numeric" value="${mo.categoryTotals[cat]!=null?mo.categoryTotals[cat]:""}"></div></div>`).join("");
   openSheet(`<h2>変動費(合計)の編集</h2>
     <div class="desc">この月は移行データ(合計のみ)です。分類ごとの合計を直接編集できます。</div>
     ${rows}<button class="sheetbtn" id="vt-save">保存</button>`);
   document.getElementById("vt-save").addEventListener("click",()=>{
+    const mo=db.months[k0];                          // 保存の瞬間に取り直す
+    mo.categoryTotals=mo.categoryTotals||{};
     document.querySelectorAll('[data-ct]').forEach(inp=>{ mo.categoryTotals[inp.dataset.ct]=evalExpr(inp.value)||0; });
     save(); closeSheet(); render();
   });
 }
 function editVarCats(reassignCat){
-  const mo=db.months[active];
+  const k0=active;
+  const mo=db.months[k0];
   const defaults=db.settings.defaultCategories||[];
   const cnt=cat=>(mo.entries||[]).filter(e=>e.category===cat).length;
   let rows=mo.categories.map(cat=>{
@@ -294,16 +313,20 @@ function editVarCats(reassignCat){
     <button class="sheetbtn" id="vc-done" style="margin-top:14px">完了</button>`);
   const newcat=document.getElementById("vc-newcat");
   document.getElementById("vc-add").addEventListener("click",()=>{ newcat.style.display="block"; newcat.focus(); });
-  const commitAdd=()=>{ const n=newcat.value.trim(); if(n && !mo.categories.includes(n)){ mo.categories.push(n); save(); } editVarCats(); };
+  /* 入力欄に残っている分類名を確定する(再描画はしない)。
+     「完了」ボタンやシートを下に閉じた時に、打ち込んだ名前が消えるのを防ぐ。 */
+  const flushNewCat=()=>{ const mo=db.months[k0]; const n=newcat.value.trim(); newcat.value=""; if(n && !mo.categories.includes(n)){ mo.categories.push(n); save(); return true; } return false; };
+  const commitAdd=()=>{ flushNewCat(); editVarCats(); };
   newcat.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); commitAdd(); } else if(e.key==="Escape"){ newcat.style.display="none"; newcat.value=""; } });
-  document.querySelectorAll('[data-rmcat]').forEach(b=>b.addEventListener("click",()=>{ const cat=b.dataset.rmcat; if(cnt(cat)>0){ editVarCats(cat); } else { mo.categories=mo.categories.filter(c=>c!==cat); save(); editVarCats(); } }));
-  document.getElementById("vc-domove")?.addEventListener("click",()=>{ const t=document.getElementById("vc-target").value; (mo.entries||[]).forEach(e=>{ if(e.category===reassignCat) e.category=t; }); mo.categories=mo.categories.filter(c=>c!==reassignCat); save(); editVarCats(); });
+  document.querySelectorAll('[data-rmcat]').forEach(b=>b.addEventListener("click",()=>{ const mo=db.months[k0]; const cat=b.dataset.rmcat; if(cnt(cat)>0){ editVarCats(cat); } else { mo.categories=mo.categories.filter(c=>c!==cat); save(); editVarCats(); } }));
+  document.getElementById("vc-domove")?.addEventListener("click",()=>{ const mo=db.months[k0]; const t=document.getElementById("vc-target").value; (mo.entries||[]).forEach(e=>{ if(e.category===reassignCat) e.category=t; }); mo.categories=mo.categories.filter(c=>c!==reassignCat); save(); editVarCats(); });
   document.getElementById("vc-cancel")?.addEventListener("click",()=>editVarCats());
   document.getElementById("vc-done").addEventListener("click",()=>{ closeSheet(); });
-  _onSheetClose=()=>render();
+  _onSheetClose=()=>{ flushNewCat(); render(); };
 }
 function editEntry(id){
-  const mo=db.months[active]; const e=id?mo.entries.find(x=>x.id===id):null;
+  const k0=active;
+  const mo=db.months[k0]; const e=id?mo.entries.find(x=>x.id===id):null;
   const cats=mo.categories;
   const [ey,em]=active.split("-").map(Number); const eMin=active+"-01", eMax=active+"-"+String(new Date(ey,em,0).getDate()).padStart(2,"0");
   const eDefault=e?e.date:(isCurrentRealMonth(active)?active+"-"+String(new Date().getDate()).padStart(2,"0"):eMin);
@@ -320,60 +343,168 @@ function editEntry(id){
   document.getElementById("e-cash").addEventListener("click",function(){ this.classList.toggle("on"); isCash=this.classList.contains("on"); });
   document.getElementById("e-save").addEventListener("click",()=>{
     const amt=evalExpr(document.getElementById("e-amt").value); if(!amt){ return; }
-    const date=document.getElementById("e-date").value||active+"-01";
-    if(e){ e.category=cat; e.amount=amt; e.cash=isCash?amt:0; e.date=date; }
-    else{ mo.entries.push({id:"e"+Date.now(),date:date,category:cat,amount:amt,cash:isCash?amt:0}); }
+    const date=document.getElementById("e-date").value||k0+"-01";
+    const m=db.months[k0]; m.entries=m.entries||[];             // 保存の瞬間に取り直す
+    const le=id?m.entries.find(x=>x.id===id):null;
+    if(id&&!le){ closeSheet(); render(); return; }              // 対象が消えていたら何もしない
+    if(le){ le.category=cat; le.amount=amt; le.cash=isCash?amt:0; le.date=date; }
+    else{ m.entries.push({id:"e"+Date.now(),date:date,category:cat,amount:amt,cash:isCash?amt:0}); }
     save(); closeSheet(); render();
   });
-  if(e){ document.getElementById("e-del").addEventListener("click",()=>{ mo.entries=mo.entries.filter(x=>x.id!==id); save(); closeSheet(); render(); }); }
+  if(e){ document.getElementById("e-del").addEventListener("click",()=>{ const m=db.months[k0]; m.entries=(m.entries||[]).filter(x=>x.id!==id); save(); closeSheet(); render(); }); }
 }
 
-/* ---------------- 精算 draft (logic verbatim) ---------------- */
+/* ============================================================
+   精算 — フルページ + 単一下書き
+   - 下書きは記帳データ(data.json)に入れない。打っている間はこの端末の
+     localStorage に自動保存し、戻る時に非公開リポジトリの draft.json へ
+     1 回だけアップロード(1 枠のみ・savedAt が新しい方が勝ち)。
+   - 月オブジェクトの参照は保持しない。書き込みの瞬間に毎回 M() で取得
+     (同期で db が丸ごと入れ替わっても、生きている月に書く)。
+   - ページを開いている間、自動同期(pull)は一時停止(sync.js が _hesanOpen を見る)。
+   ============================================================ */
+let _hesanOpen=false;
+const DRAFT_LS="we_kakeibo_draft_v1";
+function _draftLocalGet(){ try{ const s=localStorage.getItem(DRAFT_LS); return s?JSON.parse(s):null; }catch(e){ return null; } }
+function _draftLocalSet(d){ try{ if(d) localStorage.setItem(DRAFT_LS, JSON.stringify(d)); else localStorage.removeItem(DRAFT_LS); }catch(e){} }
+function _hesanDefaultRows(){ const P=db.settings.people;
+  return [ {label:P[0]+" pay",expr:""},{label:P[0]+" 現金",expr:""},{label:P[1]+" 現金",expr:""},{label:P[1]+" pay",expr:""},{label:P[1]+" カード",expr:""} ]; }
+/* 全角数字・カンマ・¥・空白を受け付けてから evalExpr へ(compute.js は不変のまま) */
+function _hesanNum(s){ if(s==null) return null;
+  s=String(s).replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/[，,¥￥\s]/g,"");
+  return evalExpr(s); }
+
 function openHesan(){
-  const mo=db.months[active];
+  if(_hesanOpen) return;
+  _hesanOpen=true;
+  const key=active;
+  const M=()=>db.months[key];
   const P=db.settings.people;
-  let defRows = mo.hesan && mo.hesan.rows ? mo.hesan.rows
-    : [ {label:P[0]+" pay",expr:""},{label:P[0]+" 現金",expr:""},{label:P[1]+" 現金",expr:""},{label:P[1]+" pay",expr:""},{label:P[1]+" カード",expr:""} ];
-  let yzExpr = (mo.hesan && mo.hesan.yeonZan!=null) ? String(mo.hesan.yeonZan) : "";
-  let initExpr = (mo.hesan && mo.hesan.initAmount!=null) ? String(mo.hesan.initAmount) : "";   // 初期金額の上書き(任意)。空欄=自動(公式値)
-  function carry(){ return mo.start!=null?mo.start:0; }                                          // 今月の繰越金(前月繰越)=読み取り専用
-  function rowRight(expr){ const v=evalExpr(expr); if(v==null) return '未入力'; return /[+\-*/]/.test(String(expr)) ? fmtN(v) : ''; } // 数値のみ→右は空、式→計算結果
-  function rowHtml(r,i){ return `<div class="hesanrow"><input class="hi hl-edit" data-hl="${i}" value="${r.label}"><input class="hi" data-he="${i}" value="${r.expr||''}" placeholder="例: 5349+890"><span class="he">${rowRight(r.expr)}</span><button class="del" data-del="${i}">×</button></div>`; }
-  function calcTotal(){ let t=0; defRows.forEach(r=>{ const v=evalExpr(r.expr); if(v!=null) t+=v; }); return t; }
-  function initSuggest(total){ const yz=evalExpr(yzExpr); return yz==null?null:Math.round(total-yz); } // 初期金額 = 今月の繰越金 ＋ 差額 = 実際 − 相手残高
+  const esc=v=>String(v==null?"":v).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+
+  let d=_draftLocalGet();
+  let rows=(d&&d.rows&&d.rows.length)?JSON.parse(JSON.stringify(d.rows)):_hesanDefaultRows();
+  let yzExpr=(d&&d.yeonZan!=null)?String(d.yeonZan):"";
+  let initExpr=(d&&d.initAmount!=null)?String(d.initAmount):"";
+  let draftMonth=d?d.month:null;
+  let lastSavedAt=d?(d.savedAt||0):0;
+  let typed=false, dirty=false, saveTimer=null;
+
+  const page=document.createElement("div");
+  page.className="hesanpage";
+  document.body.appendChild(page);
+
+  function isEmptyDraft(){ return rows.every(r=>!String(r.expr||"").trim()) && !String(yzExpr).trim() && !String(initExpr).trim(); }
+  function draftObj(){ return { month:key, rows:rows, yeonZan:yzExpr, initAmount:initExpr, savedAt:Date.now() }; }
+  function flushLocal(){ clearTimeout(saveTimer); saveTimer=null; if(!dirty) return; dirty=false;
+    const o=isEmptyDraft()?null:draftObj(); _draftLocalSet(o); if(o) lastSavedAt=o.savedAt; }
+  function touch(){ typed=true; dirty=true; draftMonth=key; clearTimeout(saveTimer); saveTimer=setTimeout(flushLocal,800); }
+
+  function carry(){ const m=M(); return (m&&m.start!=null)?m.start:0; }
+  function rowRight(expr){ const v=_hesanNum(expr); if(v==null) return '未入力'; return /[+\-*/]/.test(String(expr)) ? fmtN(v) : ''; }
+  function rowHtml(r,i){ return `<div class="hesanrow"><input class="hi hl-edit" data-hl="${i}" value="${esc(r.label)}"><input class="hi" data-he="${i}" value="${esc(r.expr||'')}" placeholder="例: 5349+890"><span class="he">${rowRight(r.expr)}</span><button class="del" data-del="${i}">×</button></div>`; }
+  function calcTotal(){ let t=0; rows.forEach(r=>{ const v=_hesanNum(r.expr); if(v!=null) t+=v; }); return t; }
+  function initSuggest(total){ const yz=_hesanNum(yzExpr); return yz==null?null:Math.round(total-yz); }
   function diffHtml(total){
-    const yz=evalExpr(yzExpr);
+    const yz=_hesanNum(yzExpr);
     const theoryLine=`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span style="color:var(--ink-2)">理論上の残高 <small style="font-weight:400;color:var(--ink-3)">(${P[1]}残高 ＋ 繰越金)</small></span><span class="num" style="color:var(--ink-2)">${yz!=null?fmt(yz+carry()):'—'}</span></div>`;
     if(yz==null) return theoryLine+`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span style="color:var(--ink-3)">差額(実際 − 理論)</span><span style="color:var(--ink-3)">—</span></div>`;
-    const d=Math.round(total-(yz+carry())); const col=d>0?'var(--sage)':(d<0?'var(--clay)':'var(--ink)'); const sign=d>0?'+':(d<0?'−':'±'); const word=d>0?'多い・余り':(d<0?'少ない・不足':'一致');
-    return theoryLine+`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span>差額(実際 − 理論)</span><span style="color:${col}">${sign}¥${Math.abs(d).toLocaleString("ja-JP")} <small style="font-weight:400;color:var(--ink-2)">${word}</small></span></div>`;
+    const dd=Math.round(total-(yz+carry())); const col=dd>0?'var(--sage)':(dd<0?'var(--clay)':'var(--ink)'); const sign=dd>0?'+':(dd<0?'−':'±'); const word=dd>0?'多い・余り':(dd<0?'少ない・不足':'一致');
+    return theoryLine+`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span>差額(実際 − 理論)</span><span style="color:${col}">${sign}¥${Math.abs(dd).toLocaleString("ja-JP")} <small style="font-weight:400;color:var(--ink-2)">${word}</small></span></div>`;
   }
-  function initHint(total){ const s=initSuggest(total); return s!=null ? ('空欄なら自動 '+fmt(s)) : ('※ '+P[1]+'残高を入れると自動計算'); }
-  function initPh(total){ const s=initSuggest(total); return s!=null ? fmtN(s) : ''; }
-  function saveDraft(){ const el=document.getElementById("he-init"); const ov=(el && el.value.trim())?evalExpr(el.value):null; mo.hesan={rows:defRows,yeonZan:evalExpr(yzExpr),initAmount:ov}; save(); }
+  function initHint(total){ const sg=initSuggest(total); return sg!=null ? ('空欄なら自動 '+fmt(sg)) : ('※ '+P[1]+'残高を入れると自動計算'); }
+  function initPh(total){ const sg=initSuggest(total); return sg!=null ? fmtN(sg) : ''; }
+  function msg(t){ const m=document.getElementById("hp-msg"); if(m) m.textContent=t||""; }
+  function refresh(){ const t=calcTotal();
+    const te=document.getElementById("he-total"); if(te) te.textContent=fmt(t);
+    const dbx=document.getElementById("he-diffbox"); if(dbx) dbx.innerHTML=diffHtml(t);
+    const h=document.getElementById("he-init-hint"); if(h) h.textContent=initHint(t);
+    const ie=document.getElementById("he-init"); if(ie) ie.placeholder=initPh(t); }
+
   function build(){
-    const total=calcTotal();
-    openSheet(`<h2>精算(下書き)</h2>
-      <div class="desc">手元のお金を計算して、今月の<b>初期金額</b>(繰越金)を出すための下書きです。記帳データとは連動しません。各欄は <b>5349+890</b> のように式で書けます。</div>
-      <div id="he-rows">${defRows.map(rowHtml).join("")}</div>
+    const t=calcTotal();
+    page.innerHTML=`
+    <div class="hp-top">
+      <button class="iconbtn" id="hp-back" aria-label="概要へ戻る"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="hp-title">精算 <small>${labelOf(key)}</small></div>
+      <button class="hp-del" id="hp-deldraft">下書きを削除</button>
+    </div>
+    <div class="hp-scroll">
+      <div class="desc">手元のお金を計算して、今月の<b>初期金額</b>(繰越金)を出します。記帳データとは連動しません。各欄は <b>5349+890</b> のように式で書けます。下書きは自動保存されます。</div>
+      ${draftMonth && draftMonth!==key ? `<div class="hp-mismatch">この下書きは ${labelOf(draftMonth)} のものです</div>` : ``}
+      <div id="he-rows">${rows.map(rowHtml).join("")}</div>
       <button class="addrow" id="he-add">+ 行を追加</button>
-      <div class="htotal"><span>実際に残ったお金</span><span class="num" id="he-total">${fmt(total)}</span></div>
+      <div class="htotal"><span>実際に残ったお金</span><span class="num" id="he-total">${fmt(t)}</span></div>
       <div class="htotal" style="border-top:1px dashed var(--hair)"><span style="color:var(--ink-2)">今月の繰越金 <small style="font-weight:400;color:var(--ink-3)">前月繰越・自動</small></span><span class="num" style="color:var(--ink-2)">${fmt(carry())}</span></div>
-      <div class="field" style="margin:10px 0 2px"><label>${P[1]}残高 <span class="hint">手入力</span></label><input class="finput num" id="he-yeon" inputmode="numeric" value="${yzExpr}" placeholder="理論上 残るはずの金額"></div>
-      <div id="he-diffbox">${diffHtml(total)}</div>
-      <div class="field" style="margin:10px 0 2px"><label>初期金額（今月の繰越金 ＋ 差額） <span class="hint" id="he-init-hint">${initHint(total)}</span></label><input class="finput num" id="he-init" inputmode="numeric" value="${initExpr}" placeholder="${initPh(total)}"></div>
-      <button class="sheetbtn" id="he-setinit">初期金額（今月の繰越金 ＋ 差額）を設定</button>`);
-    function refresh(){ const t=calcTotal(); document.getElementById("he-total").textContent=fmt(t); document.getElementById("he-diffbox").innerHTML=diffHtml(t); const h=document.getElementById("he-init-hint"); if(h) h.textContent=initHint(t); const ie=document.getElementById("he-init"); if(ie) ie.placeholder=initPh(t); }
-    document.querySelectorAll('[data-he]').forEach(inp=>inp.addEventListener("input",()=>{ defRows[+inp.dataset.he].expr=inp.value; inp.parentNode.querySelector(".he").textContent=rowRight(inp.value); refresh(); }));
-    document.querySelectorAll('[data-hl]').forEach(inp=>inp.addEventListener("input",()=>{ defRows[+inp.dataset.hl].label=inp.value; }));
-    document.querySelectorAll('[data-del]').forEach(b=>b.addEventListener("click",()=>{ defRows.splice(+b.dataset.del,1); build(); }));
-    document.getElementById("he-add").addEventListener("click",()=>{ defRows.push({label:"項目",expr:""}); build(); });
-    document.getElementById("he-yeon").addEventListener("input",function(){ yzExpr=this.value; refresh(); });
-    document.getElementById("he-init").addEventListener("input",function(){ initExpr=this.value; });
-    document.getElementById("he-setinit").addEventListener("click",()=>{ const ie=document.getElementById("he-init"); const v=(ie && ie.value.trim())?evalExpr(ie.value):initSuggest(calcTotal()); if(v!=null) mo.start=Math.round(v); _onSheetClose=null; saveDraft(); closeSheet(); render(); });
-    _onSheetClose = saveDraft;
+      <div class="field" style="margin:10px 0 2px"><label>${P[1]}残高 <span class="hint">手入力</span></label><input class="finput num" id="he-yeon" inputmode="numeric" value="${esc(yzExpr)}" placeholder="理論上 残るはずの金額"></div>
+      <div id="he-diffbox">${diffHtml(t)}</div>
+      <div class="field" style="margin:10px 0 2px"><label>初期金額（今月の繰越金 ＋ 差額） <span class="hint" id="he-init-hint">${initHint(t)}</span></label><input class="finput num" id="he-init" inputmode="numeric" value="${esc(initExpr)}" placeholder="${initPh(t)}"></div>
+      <div style="height:8px"></div>
+    </div>
+    <div class="hp-foot">
+      <button class="sheetbtn" id="he-setinit" style="margin-top:0">初期金額（今月の繰越金 ＋ 差額）を設定</button>
+      <div class="hp-note">精算を開いている間、自動同期は一時停止します（戻ると再開）</div>
+      <div class="hp-msg" id="hp-msg"></div>
+    </div>`;
+    bind();
+  }
+  function bind(){
+    document.getElementById("hp-back").addEventListener("click",()=>closeHesan());
+    document.getElementById("hp-deldraft").addEventListener("click",()=>{
+      rows=_hesanDefaultRows(); yzExpr=""; initExpr=""; draftMonth=null;
+      typed=false; dirty=false; clearTimeout(saveTimer); saveTimer=null;
+      _draftLocalSet(null); lastSavedAt=Date.now();
+      if(window._draftSync) _draftSync.push(null);
+      build(); msg("下書きを削除しました");
+    });
+    page.querySelectorAll('[data-he]').forEach(inp=>inp.addEventListener("input",()=>{ rows[+inp.dataset.he].expr=inp.value; const heEl=inp.parentNode.querySelector(".he"); if(heEl) heEl.textContent=rowRight(inp.value); touch(); refresh(); }));
+    page.querySelectorAll('[data-hl]').forEach(inp=>inp.addEventListener("input",()=>{ rows[+inp.dataset.hl].label=inp.value; touch(); }));
+    page.querySelectorAll('[data-del]').forEach(b=>b.addEventListener("click",()=>{ rows.splice(+b.dataset.del,1); touch(); build(); }));
+    document.getElementById("he-add").addEventListener("click",()=>{ rows.push({label:"項目",expr:""}); touch(); build(); });
+    document.getElementById("he-yeon").addEventListener("input",function(){ yzExpr=this.value; touch(); refresh(); });
+    document.getElementById("he-init").addEventListener("input",function(){ initExpr=this.value; touch(); });
+    document.getElementById("he-setinit").addEventListener("click",()=>{
+      const ie=document.getElementById("he-init");
+      const v=(ie && ie.value.trim())?_hesanNum(ie.value):initSuggest(calcTotal());
+      if(v==null){ msg(P[1]+"残高 か 初期金額 を入力してください（金額を計算できません）"); return; }
+      const m=M();
+      if(!m){ msg("この月のデータが見つかりません。戻ってやり直してください"); return; }
+      m.start=Math.round(v);
+      save();
+      const chk=M();                                 // 書いた直後に読み直して確認
+      if(chk && chk.start===Math.round(v)){ closeHesan(); render(); }
+      else { msg("反映できませんでした。もう一度お試しください"); }
+    });
+  }
+  function closeHesan(){
+    if(!_hesanOpen) return; _hesanOpen=false;
+    flushLocal();
+    if(typed && window._draftSync){
+      const o=isEmptyDraft()?null:{month:key,rows:rows,yeonZan:yzExpr,initAmount:initExpr,savedAt:lastSavedAt||Date.now()};
+      _draftSync.push(o);
+    }
+    page.remove();
+    if(window._syncResume) setTimeout(window._syncResume, 400);   // 閉じたら同期を再開して 1 回取り込む
   }
   build();
+  /* リモート(draft.json)の下書きが新しければ取り込む(まだ打ち始めていない時だけ) */
+  if(window._draftSync){
+    _draftSync.pull().then(r=>{
+      if(!r || !r.ok || !_hesanOpen || typed) return;
+      const rd=r.draft;
+      if(!rd || (rd.savedAt||0) <= lastSavedAt) return;
+      if(rd.month==null || !rd.rows || !rd.rows.length){          // リモートは「削除済み」の印
+        rows=_hesanDefaultRows(); yzExpr=""; initExpr=""; draftMonth=null;
+        _draftLocalSet(null); lastSavedAt=rd.savedAt||Date.now(); build(); return;
+      }
+      rows=JSON.parse(JSON.stringify(rd.rows));
+      yzExpr=rd.yeonZan!=null?String(rd.yeonZan):"";
+      initExpr=rd.initAmount!=null?String(rd.initAmount):"";
+      draftMonth=rd.month; lastSavedAt=rd.savedAt||0;
+      _draftLocalSet({month:draftMonth,rows:rows,yeonZan:yzExpr,initAmount:initExpr,savedAt:lastSavedAt});
+      build();
+    }).catch(()=>{});
+  }
 }
 
 /* ---------------- settings / export (logic verbatim) ---------------- */
@@ -548,14 +679,17 @@ document.getElementById("btn-export").addEventListener("click",()=>{
 });
 
 /* ---------------- renderers (logic verbatim; restyled markup + motion hooks) ---------------- */
-function renderHeader(){ document.getElementById("monthlabel").textContent=labelOf(active); positionTabIndicator(true); updateLastmod(); }
+function renderHeader(){ if(_stripHesan()) save(); document.getElementById("monthlabel").textContent=labelOf(active); updateLastmod(); }
 
 function renderRhythm(){
   const[y,m]=active.split("-").map(Number);
   const days=new Date(y,m,0).getDate(); const isCur=isCurrentRealMonth(active); const today=new Date().getDate();
   let bars="";
   for(let d=1;d<=days;d++){
-    let cls="bar"; if(d===10)cls+=" payday"; else if(isCur&&d===today)cls+=" today"; else if(isCur&&d<today)cls+=" past";
+    let cls="bar";
+    if(d===10) cls+=" payday";                                   // 給料日の黄色は常に残す
+    if(isCur&&d===today) cls+=" today";                          // 10日と今日が重なっても両方付ける
+    else if(isCur&&d<today&&d!==10) cls+=" past";                 // 給料日は past にしない(従来通り)
     bars+=`<div class="${cls}"></div>`;
   }
   return `<div class="rhythm"><div class="bars">${bars}</div><div class="labels"><span>1</span><span class="pay">10 給料日</span><span>${days}</span></div></div>`;
@@ -646,12 +780,13 @@ function renderEntry(){
       <button class="addbtn" id="quick-add">追加する</button></div>
     <div class="entry-list">${dayHtml}</div>`;
   let qcat=cats[0], qcash=false;
-  document.getElementById("chips").addEventListener("click",e=>{ const c=e.target.closest(".chip"); if(!c||c.classList.contains("add"))return; document.querySelectorAll("#chips .chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); qcat=c.dataset.c; });
+  document.getElementById("chips").addEventListener("click",e=>{ const c=e.target.closest(".chip"); if(!c)return; document.querySelectorAll("#chips .chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); qcat=c.dataset.c; });
   document.getElementById("cashtog").addEventListener("click",function(){ this.classList.toggle("on"); qcash=this.classList.contains("on"); });
   document.getElementById("quick-add").addEventListener("click",()=>{
     const amt=evalExpr(document.getElementById("amtin").value); if(!amt) return;
     const date=document.getElementById("qdate").value || qDefault;
-    mo.entries.push({id:"e"+Date.now(),date:date,category:qcat,amount:amt,cash:qcash?amt:0}); save(); render();
+    const m=db.months[k]; m.entries=m.entries||[];              // 追加の瞬間に取り直す
+    m.entries.push({id:"e"+Date.now(),date:date,category:qcat,amount:amt,cash:qcash?amt:0}); save(); render();
   });
   document.querySelectorAll("[data-eid]").forEach(t=>t.addEventListener("click",()=>editEntry(t.dataset.eid)));
 }
@@ -725,24 +860,12 @@ function renderHistory(){
   document.querySelectorAll("[data-go]").forEach(r=>r.addEventListener("click",()=>{ active=r.dataset.go; switchTab("overview"); }));
 }
 
-/* ---------------- tab indicator (sliding shared background) ---------------- */
-const _tabbar=document.querySelector(".tabbar"); let _tabInd=null, _tabX=null;
-function positionTabIndicator(animate){
-  if(!_tabbar) return;
-  _tabInd = _tabInd || _tabbar.querySelector(".tabind"); if(!_tabInd) return;
-  const a=_tabbar.querySelector(".tab.on"); if(!a) return;
-  const x=a.offsetLeft, w=a.offsetWidth;
-  _tabInd.style.width=w+"px";
-  if(_tabX===null || !animate || REDUCED || !_tabInd.animate){ _tabInd.style.transform="translateX("+x+"px)"; }
-  else { springAnim(_tabInd, v=>"translateX("+v+"px)", _tabX, x, SP_TAB); }
-  _tabX=x;
-}
-window.addEventListener("resize", ()=>positionTabIndicator(false));
+/* 「最終更新 ○分前」の表示を定期的に更新 */
 setInterval(()=>{ try{ updateLastmod(); }catch(e){} }, 30000);
 
 /* ---------------- damping press feedback (pointer-driven, document-level so it survives re-renders) ---------------- */
 (function(){
-  var SEL=".iconbtn,.mnav button,.tab,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.balbtn,.addbtn,.sheetbtn,.hrow,.hero";
+  var SEL=".iconbtn,.mnav button,.tab,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.hp-del,.balbtn,.addbtn,.sheetbtn,.hrow,.hero";
   function _down(e){ var el=e.target.closest && e.target.closest(SEL); if(el) el.classList.add("pressing"); }
   function _up(){ var els=document.querySelectorAll(".pressing"); for(var i=0;i<els.length;i++) els[i].classList.remove("pressing"); }
   document.addEventListener("pointerdown",_down,{passive:true});
