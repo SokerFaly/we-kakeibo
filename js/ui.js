@@ -13,7 +13,9 @@
    - 固定費: 引き落とし総額のみ入力でも合計に含める(-07)
    - 編集は全画面ページ(開いている間は下の画面を固定・戻るは左上ボタン)(REV-01/-06)
    - 精算下書きの衝突確認・設定後の下書き削除・月違いガード(-12/-13/-14)
-   - 分類の統合(REV-02)・東京外ロック(REV-03)・現金未使用の表示(REV-04)
+   - 分類の統合(REV-02)・東京時間で扱い境外は記帳時に確認(REV-03改)・現金未使用の表示(REV-04)
+   [2026-09-02 追加] 1〜9日は「入金前」表示(REV-07a)・既定値変更の適用ダイアログ(REV-07c)・
+   過去月の節奏条(REV-07b)・上部胶囊/下部二拍タブ(REV-07d/e)
    storage.js / compute.js / main.js(凍結)は不変。関数の差し替えは
    save / fixedTotal の 2 つだけ(どちらも「包む」だけで元は呼ぶ)。
    ============================================================ */
@@ -63,7 +65,21 @@ function esc(v){ return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,
    - 月ラベルのタップ: 当月へ戻る
    いずれも本ファイル(ui.js)内のみ。storage/compute/main(凍結)は不変。
    ============================================================ */
-function _nowYM(){ const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+/* 「今日」は常に東京時間(端末がどこにあっても同じ月・同じ日付で扱う) */
+const PAYDAY=10;   // 給料日(節奏条・1〜9日の「入金前」表示が参照)
+function _tokyoParts(){
+  try{
+    const f=new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+    const o={}; f.formatToParts(new Date()).forEach(x=>{ if(x.type!=="literal") o[x.type]=x.value; });
+    return {y:+o.year, m:+o.month, d:+o.day, h:(+o.hour)%24, mi:+o.minute};
+  }catch(e){ const d=new Date(); return {y:d.getFullYear(), m:d.getMonth()+1, d:d.getDate(), h:d.getHours(), mi:d.getMinutes()}; }
+}
+function _nowYM(){ const t=_tokyoParts(); return t.y+"-"+String(t.m).padStart(2,"0"); }
+function _todayD(){ return _tokyoParts().d; }
+function _todayStr(){ const t=_tokyoParts(); return t.y+"-"+String(t.m).padStart(2,"0")+"-"+String(t.d).padStart(2,"0"); }
+function _tokyoClock(){ const t=_tokyoParts(); return t.m+"/"+t.d+" "+String(t.h).padStart(2,"0")+":"+String(t.mi).padStart(2,"0"); }
+function _localClock(){ const d=new Date(); return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+function _isPrePayday(k){ return k===_nowYM() && _todayD()<PAYDAY; }
 function _isEmptyMonth(m){
   return !!m && (!m.entries || !m.entries.length)
     && (!m.categoryTotals || !Object.keys(m.categoryTotals).length)
@@ -86,25 +102,30 @@ function _latestUpToToday(){
 active=_latestUpToToday();
 
 /* ============================================================
-   東京外ロック (REV-20260901-03)
-   端末の時計のタイムゾーンが Asia/Tokyo でなければ書き込みを全て止める。
+   東京の外にいる時 (REV-20260901-03 → 2026-09-02 改)
+   端末の時計のタイムゾーンが Asia/Tokyo でなければ、上部に知らせ、
+   記録の追加・編集の時だけ「東京の日付で記録しますか?」と確認する。
+   日付を持たない編集(固定費・入金・精算・設定)は確認しない。
    (判定は時計設定であり GPS ではない。iPhone「日付と時刻」自動なら現地で変わる)
    ============================================================ */
 function _zoneName(){ try{ return (Intl.DateTimeFormat().resolvedOptions().timeZone)||""; }catch(e){ return ""; } }
-function _zoneLocked(){ const z=_zoneName(); if(z) return z!=="Asia/Tokyo"; return new Date().getTimezoneOffset()!==-540; }
-let _zoneLockedNow=_zoneLocked();
+function _zoneAwayNow(){ const z=_zoneName(); if(z) return z!=="Asia/Tokyo"; return new Date().getTimezoneOffset()!==-540; }
+let _zoneAway=_zoneAwayNow();
 function _renderZoneBar(){
   let bar=document.getElementById("zonebar");
-  if(!_zoneLockedNow){ if(bar) bar.remove(); return; }
+  if(!_zoneAway){ if(bar) bar.remove(); return; }
   if(!bar){
     bar=document.createElement("div"); bar.id="zonebar"; bar.className="zonebar";
     const nav=document.querySelector(".month");
     if(nav && nav.parentNode) nav.parentNode.insertBefore(bar, nav.nextSibling); else document.body.prepend(bar);
   }
-  bar.innerHTML='<span class="zl">🔒</span><div><b>今のエリアが東京ではないため、記帳をロックしています。</b><br>旅行中はメモに残し、東京に戻ってから入力してください。</div>';
+  bar.innerHTML='<span class="zl">🌏</span><div><b>今のエリアは東京ではありません。</b>日付は東京時間（'+_tokyoClock()+'）で扱います。</div>';
 }
-/* 書き込み系の入口で呼ぶ。ロック中なら知らせて true */
-function _writeBlocked(){ if(_zoneLockedNow){ toast("🔒 東京の外では記帳・編集できません","warn"); return true; } return false; }
+/* 記録を書く直前: 東京の外なら確認。Promise<boolean> */
+async function _confirmAwayEntry(date){
+  if(!_zoneAway) return true;
+  return _confirmDialog("今いる場所は <b>"+_localClock()+"</b>、東京は <b>"+_tokyoClock()+"</b> です。<br>この記録を日付 <b>"+_md(date)+"</b>（東京時間）で記録しますか？","この日付で記録","やめる");
+}
 
 /* ============================================================
    月の生命周期 (BUG-20260901-01/-04/-05)
@@ -119,7 +140,6 @@ function _carryTargets(){ const now=_nowYM(); return [now, shiftMonth(now,1)]; }
 function _isCarryMonth(k){ return _carryTargets().indexOf(k)>=0; }
 function _isKari(k){ const m=db.months[k]; return !!m && !m.startConfirmed && _isCarryMonth(k); }
 function _refreshCarry(){
-  if(_zoneLockedNow) return false;
   let changed=false;
   _carryTargets().forEach(k=>{
     const m=db.months[k]; if(!m || m.startConfirmed) return;
@@ -130,8 +150,7 @@ function _refreshCarry(){
   return changed;
 }
 function ensureToday(opts){
-  _zoneLockedNow=_zoneLocked(); _renderZoneBar();
-  if(_zoneLockedNow) return;                       // ロック中は作らない・書かない
+  _zoneAway=_zoneAwayNow(); _renderZoneBar();
   const now=_nowYM(); const rolled=(now!==_seenYM); _seenYM=now;
   let created=false;
   if(!db.months[now]){ ensureMonth(now); created=true; }    // ensureMonth → save → 追従
@@ -164,7 +183,6 @@ window._afterFirstSync=function(){ ensureToday({startup:true}); };
     } else if(e.target.closest("#next")){
       const target=shiftMonth(active,1), now=_nowYM();
       if(!db.months[target]){
-        if(_zoneLockedNow){ e.stopPropagation(); e.preventDefault(); _flashMonthLabel("ロック中は作成できません"); return; }
         if(target>now){
           e.stopPropagation(); e.preventDefault();
           if(target===shiftMonth(now,1)) _confirmCreateFuture(target);
@@ -388,7 +406,6 @@ function _cashUnusedSince(){
 /* ---------------- editors (logic verbatim + 入力検査 + 回執) ---------------- */
 function _snapVal(raw, old){ const s=String(raw==null?"":raw).trim(); if(!s) return null; const v=evalExpr(s); return v==null?old:v; }
 function editFixed(){
-  if(_writeBlocked()) return;
   const k0=active;                                  // 開いた月のキーだけ保持(オブジェクト参照は保持しない)
   const f=db.months[k0].fixed;                      // 表示用スナップショット
   let extraHtml=(f.extra||[]).map((x,i)=>`<div class="frow" style="align-items:flex-end;margin-bottom:14px"><div class="field" style="margin-bottom:0"><label>その他の名前</label><input class="finput" data-ex="name" data-i="${i}" value="${esc(x.name||"")}"></div><div class="field" style="margin-bottom:0"><label>金額</label><input class="finput num" data-ex="amount" data-i="${i}" inputmode="numeric" value="${x.amount!=null?x.amount:""}"></div><button class="del" data-rmex="${i}" style="margin-bottom:10px">×</button></div>`).join("");
@@ -419,8 +436,7 @@ function editFixed(){
   document.getElementById("f-addextra").addEventListener("click",()=>{ const f=db.months[k0].fixed; f.extra=f.extra||[]; snap(); f.extra.push({name:"",amount:null}); editFixedReopen(); });
   document.querySelectorAll('[data-rmex]').forEach(b=>b.addEventListener("click",()=>{ const f=db.months[k0].fixed; snap(); f.extra.splice(+b.dataset.rmex,1); editFixedReopen(); }));
   document.getElementById("f-save").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    const vals={}; let bad=false;
+      const vals={}; let bad=false;
     ["f-rent","f-mgmt","f-total","f-denki","f-gas","f-water"].forEach(id=>{ const r=_readAmt(id,{allowEmpty:true}); if(!r.ok) bad=true; else vals[id]=r.v; });
     const exs=[];
     document.querySelectorAll('[data-ex]').forEach(inp=>{ const i=+inp.dataset.i, k=inp.dataset.ex;
@@ -439,7 +455,6 @@ function editFixed(){
 function editFixedReopen(){ editFixed(); }
 
 function editIncome(){
-  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0];
   const kari=_isKari(k0);
@@ -452,8 +467,7 @@ function editIncome(){
   let touchedStart=false;
   document.getElementById("i-start").addEventListener("input",()=>{ touchedStart=true; });
   document.getElementById("i-save").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    let bad=false;
+      let bad=false;
     const rs=_readAmt("i-start",{allowEmpty:false}); if(!rs.ok) bad=true;
     const inc=[];
     document.querySelectorAll('[data-in]').forEach(inp=>{ const i=+inp.dataset.i,k=inp.dataset.in;
@@ -469,7 +483,6 @@ function editIncome(){
   });
 }
 function editCash(){
-  if(_writeBlocked()) return;
   const k0=active;
   const c=db.months[k0].cash||{start:0,deposit:0};   // 表示用。開いただけでは db に書かない
   openSheet(`<h2>現金の編集</h2>
@@ -478,8 +491,7 @@ function editCash(){
     <div class="field"><label>今月の引き出し額</label><input class="finput num" id="c-dep" inputmode="numeric" value="${c.deposit!=null?c.deposit:""}"></div>
     <button class="sheetbtn" id="c-save">保存</button>`);
   document.getElementById("c-save").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    const a=_readAmt("c-start",{allowEmpty:false}), b=_readAmt("c-dep",{allowEmpty:false});
+      const a=_readAmt("c-start",{allowEmpty:false}), b=_readAmt("c-dep",{allowEmpty:false});
     if(!a.ok||!b.ok){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     const mo=db.months[k0]; const cc=mo.cash||(mo.cash={start:0,deposit:0});   // 保存の瞬間に取り直す
     cc.start=a.v; cc.deposit=b.v;
@@ -488,7 +500,6 @@ function editCash(){
   });
 }
 function editVarTotals(){
-  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0];
   let rows=mo.categories.map(cat=>`<div class="frow"><div class="field"><label>${esc(cat)}</label><input class="finput num" data-ct="${esc(cat)}" inputmode="numeric" value="${mo.categoryTotals[cat]!=null?mo.categoryTotals[cat]:""}"></div></div>`).join("");
@@ -496,8 +507,7 @@ function editVarTotals(){
     <div class="desc">この月は移行データ(合計のみ)です。分類ごとの合計を直接編集できます(空欄は 0)。</div>
     ${rows}<button class="sheetbtn" id="vt-save">保存</button>`);
   document.getElementById("vt-save").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    let bad=false; const vals=[];
+      let bad=false; const vals=[];
     document.querySelectorAll('[data-ct]').forEach(inp=>{ const r=_readAmt(inp,{allowEmpty:true}); if(!r.ok) bad=true; else vals.push({c:inp.dataset.ct, v:r.v||0}); });
     if(bad){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     const mo=db.months[k0];                          // 保存の瞬間に取り直す
@@ -522,7 +532,6 @@ function _catUsage(c){ let months=0, cnt=0, last="";
 function _allCats(){ return Array.from(new Set(monthsAsc().flatMap(m=>db.months[m].categories||[]).concat(monthsAsc().flatMap(m=>(db.months[m].entries||[]).map(e=>e.category))))).filter(Boolean); }
 
 function editVarCats(reassignCat){
-  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0];
   const defaults=db.settings.defaultCategories||[];
@@ -626,8 +635,7 @@ function _mergeCatsStep3(k0, sel, target){
   const conf=document.getElementById("mg-confirm"), run=document.getElementById("mg-run");
   conf.addEventListener("input",()=>{ run.disabled = conf.value.trim()!=="我已确定无误" || !plan.months.length; });
   run.addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    if(conf.value.trim()!=="我已确定无误"){ _markBad(conf,"「我已确定无误」と入力してください ✏️"); return; }
+      if(conf.value.trim()!=="我已确定无误"){ _markBad(conf,"「我已确定无误」と入力してください ✏️"); return; }
     const r=_applyMerge(sel, target);
     save();
     toast(`「${target}」に統合しました（${r.months}ヶ月・${r.ents}件）✓`);
@@ -661,16 +669,15 @@ function _highlightEntry(id){
 }
 function _md(date){ const p=String(date||"").split("-"); return p.length===3 ? (Number(p[1])+"/"+Number(p[2])) : date; }
 function editEntry(id){
-  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0]; const e=id?mo.entries.find(x=>x.id===id):null;
   const cats=mo.categories;
   const [ey,em]=active.split("-").map(Number); const eMin=active+"-01", eMax=active+"-"+String(new Date(ey,em,0).getDate()).padStart(2,"0");
   const cur=(k0===_nowYM());
-  const eDefault=e?e.date:(cur?active+"-"+String(new Date().getDate()).padStart(2,"0"):"");
+  const eDefault=e?e.date:(cur?_todayStr():"");
   let chips=cats.map(c=>`<button class="chip ${e&&e.category===c?'on':(!e&&c===cats[0]?'on':'')}" data-c="${esc(c)}">${esc(c)}</button>`).join("");
   openSheet(`<h2>${e?"記録を編集":"記録を追加"} <small>${labelOf(k0)}</small></h2>
-    ${!cur?`<div class="entrybar"><span>${labelOf(k0)} の記録です<small>（今日は ${_md(_nowYM()+"-"+String(new Date().getDate()).padStart(2,"0"))}）</small></span></div>`:''}
+    ${!cur?`<div class="entrybar"><span>${labelOf(k0)} の記録です<small>（今日は ${_md(_todayStr())}）</small></span></div>`:''}
     <div class="field"><label>日付${!cur?' <span class="hint">必ず選んでください</span>':''}</label><input class="finput" id="e-date" type="date" value="${eDefault}" min="${eMin}" max="${eMax}"></div>
     <div class="field"><label>分類</label><div class="chips" id="e-chips">${chips}</div></div>
     <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="e-amt" placeholder="0" value="${e?e.amount:''}"></div>
@@ -680,14 +687,14 @@ function editEntry(id){
   let cat=e?e.category:cats[0], isCash=!!(e&&e.cash);
   document.getElementById("e-chips").addEventListener("click",ev=>{ const c=ev.target.closest(".chip"); if(!c) return; document.querySelectorAll("#e-chips .chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); cat=c.dataset.c; });
   document.getElementById("e-cash").addEventListener("click",function(){ this.classList.toggle("on"); isCash=this.classList.contains("on"); });
-  document.getElementById("e-save").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    const ra=_readAmt("e-amt",{allowEmpty:false,allowZero:false,allowNegative:false});
+  document.getElementById("e-save").addEventListener("click",async ()=>{
+      const ra=_readAmt("e-amt",{allowEmpty:false,allowZero:false,allowNegative:false});
     const di=document.getElementById("e-date"); const date=di.value;
     let bad=!ra.ok;
     if(!date){ _markBad(di,"日付を選んでください ✏️"); bad=true; }
     else if(date<eMin||date>eMax){ _markBad(di,labelOf(k0)+" の日付を選んでください ✏️"); bad=true; }
     if(bad){ _focusFirstBad(); return; }
+    if(!(await _confirmAwayEntry(date))) return;           // 東京の外: 日付の確認
     const amt=ra.v;
     const m=db.months[k0]; m.entries=m.entries||[];             // 保存の瞬間に取り直す
     const le=id?m.entries.find(x=>x.id===id):null;
@@ -700,8 +707,7 @@ function editEntry(id){
     _highlightEntry(nid);
   });
   if(e){ document.getElementById("e-del").addEventListener("click",async ()=>{
-    if(_writeBlocked()) return;
-    const ok=await _confirmDialog(_md(e.date)+" · "+esc(e.category)+" "+fmt(e.amount)+" を削除しますか？","削除する","やめる",true);
+      const ok=await _confirmDialog(_md(e.date)+" · "+esc(e.category)+" "+fmt(e.amount)+" を削除しますか？","削除する","やめる",true);
     if(!ok) return;
     const m=db.months[k0]; m.entries=(m.entries||[]).filter(x=>x.id!==id); save(); closeSheet(); render();
     toast(_md(e.date)+" · "+e.category+" "+fmt(e.amount)+" を削除しました");
@@ -738,7 +744,6 @@ function _hm(ts){ const d=new Date(ts||0); return String(d.getHours()).padStart(
 
 function openHesan(force){
   if(_hesanOpen) return;
-  if(_writeBlocked()) return;
   const key=active;
   if(force!==true && !_isCarryMonth(key)){
     openDialog('<h2>過去の月は精算できません</h2><div class="desc">精算は今月と来月の繰越金を決めるためのものです。'+labelOf(key)+' の繰越金を直したい時は「入金 / 繰越金の編集」から変更できます。</div>'
@@ -869,8 +874,7 @@ function openHesan(force){
     document.getElementById("he-yeon").addEventListener("input",function(){ yzExpr=this.value; touch(); refresh(); });
     document.getElementById("he-init").addEventListener("input",function(){ initExpr=this.value; touch(); });
     document.getElementById("he-setinit").addEventListener("click",async ()=>{
-      if(_writeBlocked()) return;
-      if(mismatch()){ msg("下書きの月が違います。上の選択肢から選んでください"); return; }
+          if(mismatch()){ msg("下書きの月が違います。上の選択肢から選んでください"); return; }
       const ie=document.getElementById("he-init");
       const v=(ie && ie.value.trim())?_hesanNum(ie.value):initSuggest(calcTotal());
       if(v==null){ msg(P[1]+"残高 か 初期金額 を入力してください（金額を計算できません）"); return; }
@@ -972,18 +976,68 @@ function openSettings(){
     <div class="field"><label>既定の分類 <span class="hint">(カンマ区切り)</span></label><input class="finput" id="s-cats" value="${esc(S.defaultCategories.join("、"))}"></div>
     <button class="sheetbtn" id="s-save">保存</button>
     <button class="sheetbtn ghost" id="s-csv">月別 CSV を書き出す（zip・Excel 用）</button>`);
-  document.getElementById("s-save").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
+  document.getElementById("s-save").addEventListener("click",async ()=>{
     const a=_readAmt("s-inc",{allowEmpty:false}), b=_readAmt("s-rent",{allowEmpty:false}), c=_readAmt("s-mgmt",{allowEmpty:false});
     if(!a.ok||!b.ok||!c.ok){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
+    const chg={ income:(a.v!==S.defaultIncome), rent:(b.v!==S.defaultRent), mgmt:(c.v!==S.defaultMgmt) };
+    /* 金額の既定値が変わる → いつから既存の月に適用するかを本人に選ばせる (REV-20260902-07c) */
+    let from=null;
+    if(chg.income||chg.rent||chg.mgmt){
+      from=await _askApplyDefaults({income:a.v,rent:b.v,mgmt:c.v}, chg);
+      if(from===null) return;                                  // やめる
+    }
     S.people=[document.getElementById("s-p0").value||"太郎",document.getElementById("s-p1").value||"花子"];
     S.defaultIncome=a.v; S.defaultRent=b.v; S.defaultMgmt=c.v;
     S.defaultCategories=document.getElementById("s-cats").value.split(/[、,]/).map(s=>s.trim()).filter(Boolean);
+    let applied=[];
+    if(from){ applied=_applyDefaults(from, {income:a.v,rent:b.v,mgmt:c.v}, chg); }
     save(); closeSheet(); render();
-    toast("設定を保存しました ✓");
+    toast("設定を保存しました"+(applied.length?"（"+applied.map(labelOf).join("・")+" に適用）":"")+" ✓");
   });
   document.getElementById("s-csv").addEventListener("click",exportCSV);
 }
+/* 既定値の変更をどの月から適用するか。戻り値: "now"|"next"|"none"(既存月は変えない)|null(やめる) */
+function _applyTargets(from){
+  const now=_nowYM(), next=shiftMonth(now,1);
+  const ks = from==="now" ? [now,next] : (from==="next" ? [next] : []);
+  return ks.filter(k=>!!db.months[k]);
+}
+function _askApplyDefaults(nv, chg){
+  const S=db.settings, now=_nowYM(), next=shiftMonth(now,1);
+  const lines=[];
+  if(chg.rent)   lines.push("賃料 "+fmt(S.defaultRent)+" → <b>"+fmt(nv.rent)+"</b>");
+  if(chg.mgmt)   lines.push("管理費 "+fmt(S.defaultMgmt)+" → <b>"+fmt(nv.mgmt)+"</b>");
+  if(chg.income) lines.push("入金(1人) "+fmt(S.defaultIncome)+" → <b>"+fmt(nv.income)+"</b>");
+  const rowOf=k=>{ const m=db.months[k]; if(!m) return ""; const parts=[];
+    if(chg.rent)   parts.push("賃料 "+fmt(m.fixed.rent)+"→"+fmt(nv.rent));
+    if(chg.mgmt)   parts.push("管理費 "+fmt(m.fixed.mgmt)+"→"+fmt(nv.mgmt));
+    if(chg.income) parts.push("入金 "+m.income.map(i=>fmt(i.amount)).join("/")+"→"+fmt(nv.income));
+    const warn=((chg.rent||chg.mgmt) && m.fixed.totalDebit!=null) ? '<br><span style="color:var(--clay)">※ 引き落とし総額を入力済み。保証料が変わるので総額を見直してください</span>' : '';
+    return `<div class="mg-row"><span class="mg-m">${labelOf(k)}</span><span class="mg-d">${parts.join("・")}${warn}</span></div>`; };
+  const nowRow=rowOf(now), nextRow=rowOf(next);
+  return new Promise(res=>{
+    openDialog('<h2>既定値を変更します</h2>'
+      +'<div class="desc">'+lines.join("<br>")+'<br><br>'+labelOf(now)+'（今月）からの適用を選んでください。<b>過去の月は変わりません。</b>まだ無い月は作られる時に新しい値になります。</div>'
+      +'<div class="mg-list" style="margin-bottom:12px">'+(nowRow||'<div class="vc-empty">'+labelOf(now)+' はまだありません</div>')+(nextRow||'')+'</div>'
+      +'<button class="sheetbtn" id="ad-now">'+labelOf(now)+'（今月）から適用</button>'
+      +'<button class="sheetbtn ghost" id="ad-next">'+labelOf(next)+'（来月）から適用</button>'
+      +'<button class="sheetbtn ghost" id="ad-no">やめる</button>');
+    document.getElementById("ad-now").addEventListener("click",()=>{ closeDialog(true); res("now"); });
+    document.getElementById("ad-next").addEventListener("click",()=>{ closeDialog(true); res("next"); });
+    document.getElementById("ad-no").addEventListener("click",()=>{ closeDialog(true); res(null); });
+  });
+}
+/* 既存の 今月/来月 に新しい既定値を書く(過去月は絶対に触らない)。戻り値: 変えた月のキー */
+function _applyDefaults(from, nv, chg){
+  const ks=_applyTargets(from); const out=[];
+  ks.forEach(k=>{ const m=db.months[k]; let t=false;
+    if(chg.rent && m.fixed.rent!==nv.rent){ m.fixed.rent=nv.rent; t=true; }
+    if(chg.mgmt && m.fixed.mgmt!==nv.mgmt){ m.fixed.mgmt=nv.mgmt; t=true; }
+    if(chg.income){ (m.income||[]).forEach(i=>{ if(i.amount!==nv.income){ i.amount=nv.income; t=true; } }); }
+    if(t) out.push(k); });
+  return out;
+}
+
 /* ============================================================
    CSV 書き出し（旧レイアウト復刻・B 案）：月ごとに 合計/主表/家計 を
    個別ファイルにして zip にまとめる。純粋ロジック buildLedgerFiles と
@@ -1137,7 +1191,7 @@ document.getElementById("btn-export").addEventListener("click",()=>{
 /* ---------------- renderers (logic verbatim; restyled markup + motion hooks) ---------------- */
 function renderHeader(){
   if(_stripHesan()) save();
-  _zoneLockedNow=_zoneLocked(); _renderZoneBar();
+  _zoneAway=_zoneAwayNow(); _renderZoneBar();
   const now=_nowYM();
   const chip = active<now ? '<span class="mchip past">過去</span>' : (active>now ? '<span class="mchip future">未来</span>' : '');
   document.getElementById("monthlabel").innerHTML=esc(labelOf(active))+chip;
@@ -1146,30 +1200,35 @@ function renderHeader(){
 
 function renderRhythm(){
   const[y,m]=active.split("-").map(Number);
-  const days=new Date(y,m,0).getDate(); const isCur=isCurrentRealMonth(active); const today=new Date().getDate();
+  const days=new Date(y,m,0).getDate(); const now=_nowYM(); const isCur=(active===now); const today=_todayD();
+  const done=(active<now);                                     // 過去の月: 全部「走り終えた」
   let bars="";
   for(let d=1;d<=days;d++){
     let cls="bar";
-    if(d===10) cls+=" payday";                                   // 給料日の黄色は常に残す
+    if(d===PAYDAY) cls+=" payday";                                   // 給料日の黄色は常に残す
     if(isCur&&d===today) cls+=" today";                          // 10日と今日が重なっても両方付ける
-    else if(isCur&&d<today&&d!==10) cls+=" past";                 // 給料日は past にしない(従来通り)
+    else if(isCur&&d<today&&d!==PAYDAY) cls+=" past";                 // 給料日は past にしない(従来通り)
     bars+=`<div class="${cls}"></div>`;
   }
-  return `<div class="rhythm"><div class="bars">${bars}</div><div class="labels"><span>1</span><span class="pay">10 給料日</span><span>${days}</span></div></div>`;
+  return `<div class="rhythm ${done?'done':''}"><div class="bars">${bars}</div><div class="labels"><span>1</span><span class="pay">${PAYDAY} 給料日</span><span>${days}</span></div></div>`;
 }
 
 function renderOverview(){
   const k=active, mo=db.months[k], f=mo.fixed, h=hosho(k);
   const bal=balance(k);
   const nowYM=_nowYM();
-  const locked=_zoneLockedNow;
   const kari=_isKari(k), carryMonth=_isCarryMonth(k);
-  const ed=(t,label)=>locked?'':`<button class="editlink" data-edit="${t}">${label||'編集'}</button>`;
+  const ed=(t,label)=>`<button class="editlink" data-edit="${t}">${label||'編集'}</button>`;
+  /* 1〜9日は「入金前」: 入金と固定費はまだ起きていない扱いで表示だけ変える(データは 1 日から全額のまま) (REV-20260902-07a) */
+  const pre=_isPrePayday(k);
+  const preVar=varTotal(k), preBal=(mo.start||0)-preVar;
+  const soon=(amount)=>pre?`<span class="soon">${PAYDAY}日から（予定 ${fmt(amount)}）</span>`:'';
+  const dimCls=pre?' dim':'';
   // 月末リマインダー: 当月かつ月末まで7日以内のときだけ表示。タップで精算を開く
   let remind="";
-  if(isCurrentRealMonth(k)){
+  if(k===nowYM){
     const [ry,rm]=k.split("-").map(Number);
-    const left=new Date(ry,rm,0).getDate()-new Date().getDate();
+    const left=new Date(ry,rm,0).getDate()-_todayD();
     if(left>=0 && left<=7){
       const msg=left>0?`月末まで あと ${left} 日 — 精算をしてお金を合わせましょう`:`今日は月末です。精算をしましょう`;
       remind=`<div class="carrynote remind-only"><div>${msg}</div></div>`;
@@ -1177,17 +1236,17 @@ function renderOverview(){
   }
   // 仮の繰越金の知らせ(今月だけ・精算で確定すると消える)
   const nag = (k===nowYM && kari) ? `<div class="carrynote nag"><div><b>${labelOf(k)}の精算がまだです。</b>繰越金 ${fmt(mo.start)} は仮の値（前月の残高に自動で追従）。精算で確定すると自動では変わらなくなります。</div></div>` : "";
-  const emptyRow=(label,v,extraCls)=>`<div class="row"><span class="k">${label}</span><span class="v num ${v==null?'empty':(extraCls||'')}">${v==null?'未入力':fmt(v)}</span></div>`;
+  const emptyRow=(label,v,extraCls)=>`<div class="row"><span class="k">${label}</span><span class="v num ${v==null?'empty':((extraCls||'')+dimCls)}">${v==null?'未入力':fmt(v)}</span></div>`;
   const fixedRows=`
     ${emptyRow('賃料',f.rent)}
     ${emptyRow('管理費',f.mgmt)}
     ${emptyRow('電気',f.denki)}
     ${f.totalDebit!=null && f.denki==null
       ? `<div class="row"><span class="k">引き落とし総額 <small>電気未入力・総額で計上</small></span><span class="v num calc">${fmt(f.totalDebit)}</span></div>`
-      : `<div class="row"><span class="k">保証料+引落手数料 <small>自動</small></span><span class="v num ${h==null?'empty':'calc'}">${h==null?'未入力':fmt(h)}</span></div>`}
+      : `<div class="row"><span class="k">保証料+引落手数料 <small>自動</small></span><span class="v num ${h==null?'empty':('calc'+dimCls)}">${h==null?'未入力':fmt(h)}</span></div>`}
     ${emptyRow('ガス',f.gas)}
     ${emptyRow('水道',f.water)}
-    ${(f.extra||[]).map(x=>`<div class="row"><span class="k">${esc(x.name)}</span><span class="v num ${x.amount==null?'empty':''}">${x.amount==null?'未入力':fmt(x.amount)}</span></div>`).join("")}`;
+    ${(f.extra||[]).map(x=>`<div class="row"><span class="k">${esc(x.name)}</span><span class="v num ${x.amount==null?'empty':dimCls}">${x.amount==null?'未入力':fmt(x.amount)}</span></div>`).join("")}`;
   const varRows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
   const c=mo.cash, cr=cashRemain(k);
   const unused=_cashUnusedSince();
@@ -1200,31 +1259,32 @@ function renderOverview(){
     :`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span>${ed('cash','追加')}</div><div class="row"><span class="k" style="color:var(--ink-3)">現金データなし</span></div></div>`;
   // 精算ボタン: 今月・来月だけ。過去月は状態表示に変わる(タップで説明)
   let hesanBtn="";
-  if(!locked){
-    if(carryMonth) hesanBtn=`<button class="balbtn ${kari?'urge':''}" id="open-hesan"><div class="txt"><b>精算する</b>(月末の計算)<br>${kari?'繰越金を確定してください':'手元のお金を計算して繰越金を合わせる'}</div><div class="go">›</div></button>`;
-    else hesanBtn=`<button class="balbtn past" id="hesan-past"><div class="txt"><b>精算 ${mo.startConfirmed?'済み ✓':'（自動の繰越金）'}</b><br>過去の月は精算できません。繰越金は「入金 / 繰越金」の編集から</div><div class="go">›</div></button>`;
-  }
+  if(carryMonth) hesanBtn=`<button class="balbtn ${kari?'urge':''}" id="open-hesan"><div class="txt"><b>精算する</b>(月末の計算)<br>${kari?'繰越金を確定してください':'手元のお金を計算して繰越金を合わせる'}</div><div class="go">›</div></button>`;
+  else hesanBtn=`<button class="balbtn past" id="hesan-past"><div class="txt"><b>精算 ${mo.startConfirmed?'済み ✓':'（自動の繰越金）'}</b><br>過去の月は精算できません。繰越金は「入金 / 繰越金」の編集から</div><div class="go">›</div></button>`;
   const startChip = kari ? ' <span class="chip-kari">仮</span>' : ((mo.startConfirmed && carryMonth) ? ' <span class="chip-ok">確定</span>' : '');
 
   document.getElementById("v-overview").innerHTML=`
     ${renderRhythm()}
-    <div class="hero"><div class="lbl">今月の残高</div>
-      <div class="amt num"><span class="yen">¥</span><span id="hero-amt">${fmtN(bal)}</span></div>
-      <div class="sub num"><span class="in">入金 ${fmt(incomeTotal(k))}</span><i>·</i>支出 ${fmt(totalSpend(k))}</div>
+    <div class="hero"><div class="lbl">今月の残高${pre?` <span class="dim">（${PAYDAY}日の入金前）</span>`:''}</div>
+      <div class="amt num"><span class="yen">¥</span><span id="hero-amt">${fmtN(pre?preBal:bal)}</span></div>
+      ${pre
+        ? `<div class="sub num"><span class="in">入金 ¥0</span><i>·</i>支出 ${fmt(preVar)}</div>
+           <div class="pre num">${PAYDAY}日に 入金 <b>${fmt(incomeTotal(k))}</b>・固定費 <b>${fmt(fixedTotal(k))}</b><br>入金後の残高 <b>${fmt(bal)}</b></div>`
+        : `<div class="sub num"><span class="in">入金 ${fmt(incomeTotal(k))}</span><i>·</i>支出 ${fmt(totalSpend(k))}</div>`}
       ${kari?`<div class="kari">繰越 仮 ${fmt(mo.start)} — 精算で確定されます</div>`:''}</div>
     ${hesanBtn}
     ${nag}
     ${remind}
     <div class="stack">
-      <div class="card"><div class="head"><span class="t">固定費</span><div class="right"><span class="tot num">${fmt(fixedTotal(k))}</span>${ed('fixed')}</div></div>${fixedRows}</div>
-      <div class="card"><div class="head"><span class="t">変動費</span><div class="right"><span class="tot num">${fmt(varTotal(k))}</span>${locked?'':(k>=nowYM?'<button class="editlink" id="edit-varcats">編集</button>':(mo.entries&&mo.entries.length?'<button class="editlink" data-edit="goentry">記帳へ</button>':'<button class="editlink" data-edit="vartot">編集</button>'))}</div></div>${varRows}</div>
+      <div class="card"><div class="head"><span class="t">固定費</span><div class="right"><span class="tot num">${pre?'¥0':fmt(fixedTotal(k))}${soon(fixedTotal(k))}</span>${ed('fixed')}</div></div>${fixedRows}</div>
+      <div class="card"><div class="head"><span class="t">変動費</span><div class="right"><span class="tot num">${fmt(varTotal(k))}</span>${(k>=nowYM?'<button class="editlink" id="edit-varcats">編集</button>':(mo.entries&&mo.entries.length?'<button class="editlink" data-edit="goentry">記帳へ</button>':'<button class="editlink" data-edit="vartot">編集</button>'))}</div></div>${varRows}</div>
       ${cashCard}
-      <div class="card"><div class="head"><span class="t">入金 / 繰越金</span><div class="right"><span class="tot num">${fmt(incomeTotal(k))}</span>${ed('income')}</div></div>
-        ${mo.income.map(i=>`<div class="row"><span class="k">${esc(i.who)}</span><span class="v num">${fmt(i.amount)}</span></div>`).join("")}
+      <div class="card"><div class="head"><span class="t">入金 / 繰越金</span><div class="right"><span class="tot num">${pre?'¥0':fmt(incomeTotal(k))}${soon(incomeTotal(k))}</span>${ed('income')}</div></div>
+        ${mo.income.map(i=>`<div class="row"><span class="k">${esc(i.who)}</span><span class="v num${dimCls}">${fmt(i.amount)}</span></div>`).join("")}
         <div class="row"><span class="k">前月繰越${startChip}</span><span class="v num">${fmt(mo.start)}</span></div></div>
     </div>`;
-  const heroEl=document.getElementById("hero-amt");
-  if(heroEl){ if(_heroPrev!==null && _heroPrev!==Math.round(bal)) rollNumber(heroEl,_heroPrev,Math.round(bal)); _heroPrev=Math.round(bal); }
+  const heroEl=document.getElementById("hero-amt"); const shown=Math.round(pre?preBal:bal);
+  if(heroEl){ if(_heroPrev!==null && _heroPrev!==shown) rollNumber(heroEl,_heroPrev,shown); _heroPrev=shown; }
   document.getElementById("edit-varcats")?.addEventListener("click",()=>editVarCats());
   document.getElementById("hesan-past")?.addEventListener("click",()=>openHesan());
 }
@@ -1233,19 +1293,18 @@ let _heroPrev=null;
 let _qKeep=null;   // 記帳直後に日付・分類・現金の選択を保つ (BUG-20260901-15)
 function renderEntry(){
   const k=active, mo=db.months[k];
-  const locked=_zoneLockedNow;
   if(mo.migrated && !(mo.entries&&mo.entries.length)){
     const rows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
     document.getElementById("v-entry").innerHTML=`<div class="migbox"><div class="mh">この月は移行データです。日次の明細はありません。分類ごとの合計を編集できます。</div>
       <div class="card" style="box-shadow:none;border:none;padding:0">${rows}</div>
-      ${locked?'':'<button class="sheetbtn" id="go-vartot" style="margin-top:14px">合計を編集</button>'}</div>`;
+      <button class="sheetbtn" id="go-vartot" style="margin-top:14px">合計を編集</button></div>`;
     document.getElementById("go-vartot")?.addEventListener("click",editVarTotals); return;
   }
   const cats=mo.categories;
   const cur=(k===_nowYM());
   const keep=_qKeep; _qKeep=null;
   const [yQ,mQ]=k.split("-").map(Number); const qLast=new Date(yQ,mQ,0).getDate();
-  const todayStr=k+"-"+String(new Date().getDate()).padStart(2,"0");
+  const todayStr=_todayStr();
   const qDefault=keep?keep.date:(cur?todayStr:"");
   const qMin=k+"-01", qMax=k+"-"+String(qLast).padStart(2,"0");
   const initCat=(keep && cats.includes(keep.cat))?keep.cat:cats[0];
@@ -1259,31 +1318,28 @@ function renderEntry(){
     const tags=items.map(e=>`<span class="tag ${e.cash?'cash':''}" data-eid="${e.id}">${esc(e.category)} ${fmt(e.amount)}${e.cash?' · 現':''}</span>`).join("");
     return `<div class="day"><div class="date"><div class="d num">${dd}</div><div class="w">${w}</div></div><div class="items">${tags}</div><div class="dtot num">${fmt(tot)}</div></div>`;
   }).join("");
-  if(!dates.length) dayHtml=`<div class="listhint">まだ記録がありません。${locked?'':'上から追加できます。'}</div>`;
-  const now=_nowYM(); const td=new Date();
-  const bar = cur ? "" : `<div class="entrybar"><span><b>${labelOf(k)}</b> に記帳します<small>（今日は ${td.getMonth()+1}/${td.getDate()}）</small></span><button class="mini" id="q-gonow">今月へ</button></div>`;
-  const quick = locked
-    ? `<div class="quickadd locknote"><div class="qh">🔒 記帳はロック中です</div><div class="desc" style="margin:0">今のエリアが東京ではありません。メモに残して、東京に戻ってから入力してください。</div></div>`
-    : `<div class="quickadd">${bar}<div class="qh">支出を追加</div>
+  if(!dates.length) dayHtml=`<div class="listhint">まだ記録がありません。上から追加できます。</div>`;
+  const now=_nowYM();
+  const bar = cur ? "" : `<div class="entrybar"><span><b>${labelOf(k)}</b> に記帳します<small>（今日は ${_md(_todayStr())}）</small></span><button class="mini" id="q-gonow">今月へ</button></div>`;
+  const quick = `<div class="quickadd">${bar}<div class="qh">支出を追加</div>
       <div class="chips" id="chips">${chips}</div>
       <div class="field" style="margin:2px 0 10px"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}">${cur?'':'<div class="qhint">日付を必ず選んでください</div>'}</div>
       <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="amtin" placeholder="0"></div>
         <div class="cash-toggle ${keep&&keep.cash?'on':''}" id="cashtog"><div class="switch"></div>現金</div></div>
       <button class="addbtn" id="quick-add">追加する</button></div>`;
   document.getElementById("v-entry").innerHTML=`${quick}<div class="entry-list">${dayHtml}</div>`;
-  if(locked) return;
   let qcat=initCat, qcash=!!(keep&&keep.cash);
   document.getElementById("q-gonow")?.addEventListener("click",()=>{ _userNav=true; active=now; if(!db.months[now]) ensureMonth(now); render(); });
   document.getElementById("chips").addEventListener("click",e=>{ const c=e.target.closest(".chip"); if(!c)return; document.querySelectorAll("#chips .chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); qcat=c.dataset.c; });
   document.getElementById("cashtog").addEventListener("click",function(){ this.classList.toggle("on"); qcash=this.classList.contains("on"); });
-  document.getElementById("quick-add").addEventListener("click",()=>{
-    if(_writeBlocked()) return;
-    const ra=_readAmt("amtin",{allowEmpty:false,allowZero:false,allowNegative:false});
+  document.getElementById("quick-add").addEventListener("click",async ()=>{
+      const ra=_readAmt("amtin",{allowEmpty:false,allowZero:false,allowNegative:false});
     const di=document.getElementById("qdate"); const date=di.value;
     let bad=!ra.ok;
     if(!date){ _markBad(di,"日付を選んでください ✏️"); bad=true; }
     else if(date<qMin||date>qMax){ _markBad(di,labelOf(k)+" の日付を選んでください ✏️"); bad=true; }
     if(bad){ _focusFirstBad(); return; }
+    if(!(await _confirmAwayEntry(date))) return;           // 東京の外: 日付の確認
     const amt=ra.v;
     const m=db.months[k]; m.entries=m.entries||[];              // 追加の瞬間に取り直す
     const id="e"+Date.now();
@@ -1375,7 +1431,45 @@ function renderHistory(){
 }
 
 /* 「最終更新 ○分前」の表示を定期的に更新 + 月替わり/ロックの再判定(午前 0 時の見張り) */
-setInterval(()=>{ try{ updateLastmod(); }catch(e){} try{ if(!_sheetOpen && !_hesanOpen && !_dlgOpen) ensureToday(); else { _zoneLockedNow=_zoneLocked(); _renderZoneBar(); } }catch(e){} }, 30000);
+setInterval(()=>{ try{ updateLastmod(); }catch(e){} try{ if(!_sheetOpen && !_hesanOpen && !_dlgOpen) ensureToday(); else { _zoneAway=_zoneAwayNow(); _renderZoneBar(); } }catch(e){} }, 30000);
+
+/* ============================================================
+   下部タブ: 二拍の切替 (REV-20260902-07e)
+   - 指が触れた瞬間(pointerdown)に切替(iOS のタブバーと同じ)。main.js の click 束縛は残し、
+     直前に pointerdown で切替済みなら capture 段で止めて二重描画を防ぐ。
+   - 一拍目: 触れたアイコンに細い輪。二拍目(130ms 後): 旧タブが縮み新タブが広がる(CSS)。
+   - 文字の実幅を測って --lw に入れる(width:auto は animate できないため)。
+   ============================================================ */
+(function bindTabbar(){
+  const bar=document.querySelector(".tabbar"); if(!bar) return;
+  const tabs=Array.from(bar.querySelectorAll(".tab"));
+  function measure(){
+    tabs.forEach(t=>{ const lab=t.querySelector(".lab"); if(!lab) return;
+      const cs=getComputedStyle(lab); const probe=document.createElement("span");
+      probe.textContent=lab.textContent;
+      probe.style.cssText="position:absolute;visibility:hidden;white-space:nowrap;line-height:1";
+      probe.style.fontFamily=cs.fontFamily; probe.style.fontSize=cs.fontSize; probe.style.fontWeight=cs.fontWeight; probe.style.letterSpacing=cs.letterSpacing;
+      document.body.appendChild(probe);
+      const w=Math.ceil(probe.getBoundingClientRect().width+1); probe.remove();
+      if(w>1) t.style.setProperty("--lw", w+"px"); });
+  }
+  measure();
+  if(document.fonts && document.fonts.ready) document.fonts.ready.then(measure);
+  window.addEventListener("resize", measure);
+  let lastDown=0;
+  function pulse(t){ tabs.forEach(x=>x.classList.remove("pulse")); void t.offsetWidth; t.classList.add("pulse"); t.addEventListener("animationend", ()=>t.classList.remove("pulse"), {once:true}); }
+  tabs.forEach(t=>{
+    t.addEventListener("pointerdown", e=>{
+      if(e.button && e.button!==0) return;
+      if(t.classList.contains("on")) return;                     // 既に選択中: 軽い押下だけ(pressing は文書側で付く)
+      pulse(t); lastDown=Date.now();
+      if(typeof switchTab==="function") switchTab(t.dataset.v);   // 触れた瞬間に切替
+    });
+  });
+  /* main.js の click(=switchTab) は pointerdown 直後なら止める(同じタブへの再描画を避ける) */
+  bar.addEventListener("click", e=>{ const t=e.target.closest(".tab"); if(!t) return;
+    if(Date.now()-lastDown<600 && t.classList.contains("on")){ e.stopPropagation(); e.preventDefault(); } }, true);
+})();
 
 /* ---------------- damping press feedback (pointer-driven, document-level so it survives re-renders) ---------------- */
 (function(){
