@@ -250,7 +250,7 @@ function _pageOut(el, done){
   let fired=false; const fin=()=>{ if(fired) return; fired=true; el.removeEventListener("transitionend", fin); done(); };
   el.classList.remove("on"); el.classList.add("out");
   el.addEventListener("transitionend", fin);
-  setTimeout(fin, 260);
+  setTimeout(fin, 420);
 }
 function _fillPage(el, title, body){
   el.innerHTML =
@@ -288,6 +288,7 @@ function closeSheet(){
 let _dlgOpen=false, _dlgEl=null;
 function openDialog(html){
   if(_dlgOpen) closeDialog(true);
+  document.querySelectorAll(".dlg-ov").forEach(x=>x.remove());   // 淡出中の古いダイアログは即撤去(id の重複を防ぐ)
   const ov=document.createElement("div"); ov.className="dlg-ov";
   ov.innerHTML='<div class="dlg sheet" role="dialog" aria-modal="true">'+html+'</div>';
   document.body.appendChild(ov); _dlgEl=ov; _dlgOpen=true;
@@ -299,7 +300,7 @@ function closeDialog(silent){
   if(!_dlgOpen) return; _dlgOpen=false;
   const el=_dlgEl; _dlgEl=null;
   _unlockBody();
-  if(el){ el.classList.remove("on"); setTimeout(()=>el.remove(), 220); }
+  if(el){ el.classList.remove("on"); el.style.pointerEvents="none"; setTimeout(()=>el.remove(), 440); }
   if(!silent && window._syncResume) setTimeout(window._syncResume, 400);
 }
 /* はい/いいえ を Promise で受け取る */
