@@ -53,6 +53,18 @@
   --hrow-gap:6px;   /* 精算: 行内の間隔 */
   --date-fs:18px;   /* 記帳/編集: 日付の文字サイズ */
 
+  /* 下部タブ(二拍) 調整用 — REV-20260902-07 */
+  --pulse-duration:280ms;                       /* 触れたアイコンの輪: 0〜110ms 接触、その後広がって消える */
+  --pulse-easing:cubic-bezier(.22,.7,.25,1);
+  --morph-delay:130ms;                          /* 一拍目(輪だけ)の後に二拍目(展開)。この間 layout は動かない */
+  --morph-duration:340ms;
+  --morph-easing:cubic-bezier(.22,1,.36,1);     /* 速く出て柔らかく止まる・overshoot なし */
+  --inactive-width:60px;                        /* アイコンだけの幅 = 24 + 18×2 */
+  --active-gap:14px;
+  --active-pad:18px;
+  --active-bg:var(--accent-soft);
+  --tab-h:50px;
+
   /* spring easings (damping) */
   --spring:cubic-bezier(.34,1.32,.5,1);
   --spring-sm:cubic-bezier(.34,1.45,.6,1);
@@ -87,7 +99,7 @@ input{font-family:inherit;color:inherit}
 }
 
 /* ---------- damping press (pointer-driven, toggled by ui.js) ---------- */
-.iconbtn,.mnav button,.tab,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.hp-del{
+.iconbtn,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.hp-del{
   transition:transform .3s var(--spring-sm),background .2s var(--ease),color .2s var(--ease),box-shadow .2s var(--ease),border-color .2s var(--ease),filter .2s var(--ease);
 }
 .balbtn,.addbtn,.sheetbtn,.hrow{
@@ -95,42 +107,46 @@ input{font-family:inherit;color:inherit}
 }
 .hero{transition:transform .7s var(--spring-lg)}
 .pressing{transition-duration:.14s!important;transition-timing-function:ease-out!important}
-.iconbtn.pressing,.mnav button.pressing,.tab.pressing,.editlink.pressing,.chip.pressing,.tag.pressing,.sc.pressing,.fil.pressing,.del.pressing,.addrow.pressing,.carrynote button.pressing,.hp-del.pressing{transform:scale(.92)}
+.iconbtn.pressing,.editlink.pressing,.chip.pressing,.tag.pressing,.sc.pressing,.fil.pressing,.del.pressing,.addrow.pressing,.carrynote button.pressing,.hp-del.pressing{transform:scale(.92)}
 .balbtn.pressing,.addbtn.pressing,.sheetbtn.pressing,.hrow.pressing{transform:scale(.96) translateY(2px)}
 .hero.pressing{transform:scale(.972) translateY(3px)}
 
 /* ---------- top bar ---------- */
 .topbar{
   position:sticky;top:0;z-index:20;
-  padding:calc(14px + env(safe-area-inset-top)) 22px 12px;
-  display:flex;align-items:center;justify-content:space-between;
+  padding:calc(12px + env(safe-area-inset-top)) 22px 8px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
   background:linear-gradient(var(--bg) 62%, rgba(239,234,225,0));
 }
-.brand{font-size:12px;letter-spacing:.22em;color:var(--ink-3);font-weight:600}
+.brand{font-size:12px;letter-spacing:.22em;color:var(--ink-3);font-weight:600;white-space:nowrap}
 .brand b{color:var(--ink);font-weight:700;letter-spacing:.06em}
-.topicons{display:flex;gap:6px}
-.lastmod{font-size:11.5px;color:var(--ink-3);display:flex;align-items:center;gap:7px;letter-spacing:.01em}
+.topright{display:flex;align-items:center;gap:8px;min-width:0}
+.topicons{display:flex;gap:6px;flex-shrink:0}
+.lastmod{font-size:11px;color:var(--ink-3);display:flex;align-items:center;gap:6px;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lastmod .dot{width:6px;height:6px;border-radius:50%;background:var(--sage);flex-shrink:0}
 .lastmod:empty{display:none}
 .iconbtn{
-  width:36px;height:36px;border:none;cursor:pointer;border-radius:var(--r-pill);
+  width:32px;height:32px;border:none;cursor:pointer;border-radius:var(--r-pill);
   color:var(--ink-2);display:flex;align-items:center;justify-content:center;
-  background:var(--surface);box-shadow:var(--sh-1);
+  background:var(--surface);box-shadow:var(--sh-1);flex-shrink:0;
 }
 .iconbtn:hover{color:var(--ink)}
-.iconbtn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7}
+.iconbtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 
-/* ---------- month switcher ---------- */
-.month{padding:2px 22px 2px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center}
-.mnav{display:flex;align-items:center;justify-content:center;gap:12px}
-.month .topicons{justify-self:end}
-.mnav button{
-  width:36px;height:36px;border:none;cursor:pointer;color:var(--ink-2);
-  font-size:20px;border-radius:var(--r-pill);background:var(--surface);box-shadow:var(--sh-1);
-  display:flex;align-items:center;justify-content:center;line-height:1;
+/* ---------- month switcher: 浮いた胶囊(下部タブと同じ家族)・‹› は Apple 風の軽い反応 ---------- */
+.mnav{position:relative}   /* ui.js の月ナビ守衛が掴むフック */
+.month.mcap{
+  margin:6px 18px 0;height:52px;border-radius:var(--r-pill);background:var(--surface);box-shadow:var(--sh-2);
+  display:grid;grid-template-columns:44px 1fr 44px;align-items:center;padding:0 6px;
 }
-.mnav button:hover{color:var(--ink)}
-.month h1{font-size:17px;font-weight:600;letter-spacing:.01em;min-width:110px;text-align:center;cursor:pointer}
+.mcap button{
+  width:40px;height:40px;border:none;border-radius:var(--r-pill);background:transparent;color:var(--ink-2);
+  font-size:22px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:transform .12s var(--ease),opacity .12s var(--ease),color .2s var(--ease);
+}
+.mcap button:hover{color:var(--ink)}
+.mcap button.pressing{transform:scale(.94);opacity:.45;box-shadow:none}
+.mcap h1{font-size:17px;font-weight:600;letter-spacing:.01em;text-align:center;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;min-width:0}
 
 /* ---------- signature: month rhythm (concave groove) ---------- */
 .rhythm{padding:16px 24px 2px}
@@ -148,6 +164,10 @@ input{font-family:inherit;color:inherit}
 .rhythm .bar.payday{height:20px;background:var(--accent);box-shadow:0 0 15px var(--iglow),0 0 6px var(--wglow)}
 .rhythm .labels{position:relative;display:flex;justify-content:space-between;margin-top:10px;font-size:10.5px;color:var(--ink-3);letter-spacing:.02em}
 .rhythm .labels .pay{position:absolute;left:32%;transform:translateX(-50%);color:var(--accent-ink);font-weight:600}
+/* 過去の月: 全部の日が「走り終えた」灰色。給料日は少し高いままだが光らない */
+.rhythm.done .bar{background:var(--ink-3);opacity:.5;height:7px;box-shadow:none}
+.rhythm.done .bar.payday{height:13px;opacity:.6}
+.rhythm.done .labels .pay{color:var(--ink-3)}
 
 /* ---------- hero balance (floats highest + localized warm leak) ---------- */
 .hero{
@@ -161,6 +181,9 @@ input{font-family:inherit;color:inherit}
 .hero .sub{margin-top:12px;font-size:12.5px;color:var(--ink-2);display:inline-flex;align-items:center;gap:10px}
 .hero .sub .in{color:var(--sage);font-weight:600}
 .hero .sub i{font-style:normal;color:var(--ink-3)}
+.hero .lbl .dim{color:var(--ink-3)}
+.hero .pre{margin-top:10px;font-size:11.5px;color:var(--ink-3);line-height:1.6}
+.hero .pre b{color:var(--ink-2);font-weight:600}
 
 /* ---------- 精算 CTA (light raised) ---------- */
 .balbtn{
@@ -207,6 +230,8 @@ input{font-family:inherit;color:inherit}
 .row .k small{color:var(--ink-3);font-size:11px;margin-left:6px;font-weight:400}
 .row .v{font-size:13.5px;color:var(--ink);font-weight:500}
 .row .v.empty{color:var(--ink-3);font-weight:400}
+.row .v.dim{color:var(--ink-3);font-weight:400}
+.card .head .soon{font-size:10.5px;color:var(--ink-3);font-weight:500;margin-left:6px}
 .row .v.calc{color:var(--accent-ink);font-weight:600}
 .chip-pay{
   display:inline-block;font-size:10px;color:var(--accent-ink);border:none;
@@ -334,25 +359,37 @@ input{font-family:inherit;color:inherit}
 .tabbar{
   position:fixed;bottom:calc(16px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);
   width:calc(100% - 36px);max-width:394px;z-index:40;
-  background:var(--surface);
-  border:none;border-radius:var(--r-pill);
-  box-shadow:var(--sh-3);
-  display:flex;padding:9px;
+  background:var(--surface);border:none;border-radius:var(--r-pill);box-shadow:var(--sh-3);
+  display:flex;justify-content:space-between;align-items:center;padding:9px 10px;
 }
-.tabind{display:none}
+/* 二拍のタブ切替 (REV-20260902-07): 一拍目=触れたアイコンに細い輪、二拍目=旧タブが縮み新タブが広がる。
+   外側の胶囊は動かない。文字は容器幅で裁かれる(fade ではない)。周りのアイコンは flex の再配置で自然に動く。 */
 .tab{
-  flex:1;border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:5px;
-  color:var(--ink-3);padding:5px 0 7px;border-radius:var(--r-pill);position:relative;
+  height:var(--tab-h);border:none;cursor:pointer;border-radius:var(--r-pill);
+  display:flex;align-items:center;flex:0 0 auto;position:relative;
+  padding:0 calc((var(--inactive-width) - 24px)/2);
+  background:transparent;color:var(--ink-2);touch-action:manipulation;
+  transition:padding var(--morph-duration) var(--morph-easing) var(--morph-delay),
+             background-color var(--morph-duration) var(--morph-easing) var(--morph-delay),
+             color var(--morph-duration) var(--morph-easing) var(--morph-delay),
+             transform .18s var(--ease);
 }
-.tic{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.7}
-.tab span{font-size:10px;letter-spacing:.02em;font-weight:500}
-.tab.on{color:var(--accent-ink);font-weight:600}
-.tab.on .tic{
-  background:var(--surface);
-  box-shadow:var(--sh-1),13px 15px 17px -10px var(--leak),0 0 12px -2px var(--wglow);
+.tab.pressing{transform:none}
+.tab .ico{position:relative;width:24px;height:24px;flex-shrink:0;display:flex;transition:transform .18s var(--ease)}
+.tab.pressing .ico{transform:scale(.96)}
+.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.tab .ring{position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:1.5px solid var(--accent);opacity:0;transform:scale(.78);pointer-events:none}
+.tab.pulse .ring{animation:ring var(--pulse-duration) var(--pulse-easing) forwards}
+@keyframes ring{0%{opacity:0;transform:scale(.78)}13%{opacity:.9;transform:scale(.86)}40%{opacity:.85;transform:scale(1.05)}70%{opacity:.4;transform:scale(1.42)}100%{opacity:0;transform:scale(1.65)}}
+.tab .lab{
+  overflow:hidden;white-space:nowrap;max-width:0;margin-left:0;opacity:.8;
+  font-size:14px;font-weight:600;letter-spacing:.02em;
+  transition:max-width var(--morph-duration) var(--morph-easing) var(--morph-delay),
+             margin-left var(--morph-duration) var(--morph-easing) var(--morph-delay),
+             opacity var(--morph-duration) var(--morph-easing) var(--morph-delay);
 }
-.tab.on .tic svg{stroke:var(--accent);filter:drop-shadow(0 0 9px var(--iglow)) drop-shadow(0 0 4px var(--wglow))}
+.tab.on{background:var(--active-bg);color:var(--accent-ink);padding:0 var(--active-pad)}
+.tab.on .lab{max-width:var(--lw,80px);margin-left:var(--active-gap);opacity:1}
 
 /* ---------- view transitions ---------- */
 .view{display:none}
@@ -570,15 +607,13 @@ html.pglock body{overflow:hidden;overscroll-behavior:none}
 .mini.pressing{transform:scale(.92)}
 .qhint{font-size:11px;color:var(--ink-3);text-align:center;margin-top:6px}
 
-/* ---------- 東京外ロック (REV-20260901-03) ---------- */
+/* ---------- 東京の外にいる時の知らせ (REV-20260901-03 → 09-02 改: ロックではなく案内) ---------- */
 .zonebar{
-  margin:8px 18px 4px;background:var(--clay-soft);color:var(--clay);border-radius:var(--r);padding:12px 14px;
-  font-size:12px;line-height:1.5;display:flex;gap:10px;align-items:flex-start;box-shadow:var(--sh-1);
+  margin:10px 18px 0;background:var(--accent-soft);color:var(--accent-ink);border-radius:var(--r);padding:11px 14px;
+  font-size:12px;line-height:1.5;display:flex;gap:10px;align-items:flex-start;
 }
 .zonebar .zl{font-size:16px;line-height:1.2;flex-shrink:0}
-.zonebar b{color:var(--clay)}
-.quickadd.locknote{background:var(--surface-2);box-shadow:var(--inset)}
-.quickadd.locknote .desc{font-size:12px;color:var(--ink-2);line-height:1.5}
+.zonebar b{color:var(--accent-ink)}
 
 /* ---------- 分類ページ (REV-20260901-02) ---------- */
 .vc-sec{margin-bottom:18px}
