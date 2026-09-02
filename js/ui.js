@@ -11,7 +11,7 @@
    - 入力: 半角数字以外は保存せず警告・毎回の書き込みに回執トースト
      (BUG-20260901-02/-03/-08/-15/-16/-17)
    - 固定費: 引き落とし総額のみ入力でも合計に含める(-07)
-   - 編集は全画面ページ(端から戻るスワイプ・キーボード追従)(REV-01)
+   - 編集は全画面ページ(開いている間は下の画面を固定・戻るは左上ボタン)(REV-01/-06)
    - 精算下書きの衝突確認・設定後の下書き削除・月違いガード(-12/-13/-14)
    - 分類の統合(REV-02)・東京外ロック(REV-03)・現金未使用の表示(REV-04)
    storage.js / compute.js / main.js(凍結)は不変。関数の差し替えは
@@ -209,96 +209,48 @@ function _flashMonthLabel(text){
   _flashTimer=setTimeout(function(){ lab.style.opacity=""; if(typeof renderHeader==="function") renderHeader(); }, 1400);
 }
 
-/* ---------------- motion: spring sampler + WAAPI (no libraries) ---------------- */
+/* ---------------- motion ---------------- */
 const REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches);
 
-// integrate a damped spring 0->1; return sampled progress frames + settle duration
-function springSample(stiffness, damping, mass){
-  const dt = 1/60; let x = 0, v = 0, t = 0; const frames = []; const maxT = 4;
-  while(t < maxT){
-    const a = (-stiffness * (x - 1) - damping * v) / mass;
-    v += a * dt; x += v * dt; frames.push(x); t += dt;
-    if(Math.abs(1 - x) < 0.0008 && Math.abs(v) < 0.0008) break;
-  }
-  if(frames.length < 2) frames.push(1);
-  return { frames, duration: Math.max(200, frames.length * dt * 1000) };
-}
-// presets tuned to the brief (stiffness 260–380 / damping 24–34 / mass 0.8–1.1)
-const SP_SHEET = springSample(320, 30, 1.0);   // sheet settle — barely any overshoot
-const SP_PAGE  = springSample(300, 32, 1.0);   // full page slide-in — no overshoot
-
-// animate a transform along a spring (interruptible); build(value)->transform string
-function springAnim(el, build, p0, p1, preset, onDone){
-  if(REDUCED || !el.animate){ el.style.transform = build(p1); if(onDone) onDone(); return null; }
-  const kf = preset.frames.map(p => ({ transform: build(p0 + (p1 - p0) * p) }));
-  kf[kf.length - 1] = { transform: build(p1) };
-  const anim = el.animate(kf, { duration: preset.duration, easing: "linear", fill: "forwards" });
-  anim.onfinish = () => { el.style.transform = build(p1); try{ anim.cancel(); }catch(e){} if(onDone) onDone(); };
-  return anim;
-}
-
 /* ============================================================
-   フルページ編集 (REV-20260901-01)
+   フルページ編集 (REV-20260901-01 / REV-20260902-06)
    openSheet(html)/closeSheet() の名前と引数はそのまま(各編集器は無変更で
-   呼べる)。中身は右からスライドする全画面ページ。h2 は上部タイトルへ、
-   最初の主ボタン(.sheetbtn / ghost・danger 以外)は下部の固定フッターへ移す。
-   端(左 28px)からの右スワイプで戻る。キーボードが出たら visualViewport に
-   合わせて高さを詰める(フッターがキーボードの上に乗る)。
+   呼べる)。中身は全画面ページ。h2 は上部タイトルへ、最初の主ボタン
+   (.sheetbtn / ghost・danger 以外)は下部の固定フッターへ移す。
+   ページ・精算・ダイアログが開いている間は下の画面(body)を固定する
+   (_lockBody): iOS でスクロールが下の画面へ抜けて「疑似全画面」になるのを
+   止める。戻るは左上ボタンのみ(端スワイプ・キーボード追従は 09-02 に撤去)。
    ============================================================ */
 let _sheetOpen = false, _onSheetClose = null, _edEl = null;
+/* 下の画面を固定(入れ子で開いても数を数えて最後に解除・元のスクロール位置へ戻す) */
+let _lockN=0, _lockY=0;
+function _lockBody(){
+  if(_lockN++ > 0) return;
+  _lockY = window.scrollY || window.pageYOffset || 0;
+  const b=document.body;
+  b.style.position="fixed"; b.style.top=(-_lockY)+"px"; b.style.left="0"; b.style.right="0"; b.style.width="100%";
+  document.documentElement.classList.add("pglock");
+}
+function _unlockBody(){
+  if(_lockN>0) _lockN--; if(_lockN>0) return;
+  const b=document.body;
+  b.style.position=""; b.style.top=""; b.style.left=""; b.style.right=""; b.style.width="";
+  document.documentElement.classList.remove("pglock");
+  window.scrollTo(0,_lockY);
+}
+/* ページの出入りは CSS の淡入淡出(.on / .out)。動きを減らす設定や WAAPI の無い環境では即時。 */
 function _pageIn(el){
-  el.style.transform = "translateX(100%)";
-  requestAnimationFrame(() => {
-    if(REDUCED || !el.animate){ el.style.transform = "translateX(0)"; return; }
-    springAnim(el, v => "translateX(" + v + "%)", 100, 0, SP_PAGE);
-  });
+  el.classList.remove("out");
+  if(REDUCED || !el.animate){ el.classList.add("on"); return; }
+  void el.offsetWidth;                     // 初期状態(透明・少し縮小)を確定させてから
+  el.classList.add("on");
 }
 function _pageOut(el, done){
   if(REDUCED || !el.animate){ done(); return; }
   let fired=false; const fin=()=>{ if(fired) return; fired=true; el.removeEventListener("transitionend", fin); done(); };
-  el.style.transition = "transform .3s cubic-bezier(.4,0,1,1)";
-  el.style.transform = "translateX(100%)";
+  el.classList.remove("on"); el.classList.add("out");
   el.addEventListener("transitionend", fin);
-  setTimeout(fin, 420);
-}
-/* 端からの戻るスワイプ(端末の戻るジェスチャの代わり・ホーム画面 PWA には無い) */
-function _attachEdgeBack(el, onClose){
-  let sx=0, sy=0, dx=0, dragging=false, decided=false, t0=0;
-  el.addEventListener("pointerdown", e=>{
-    if(e.clientX > 28 || e.pointerType==="mouse") return;
-    dragging=true; decided=false; sx=e.clientX; sy=e.clientY; dx=0; t0=performance.now(); el.style.transition="none";
-  });
-  el.addEventListener("pointermove", e=>{
-    if(!dragging) return;
-    dx=e.clientX-sx; const dy=e.clientY-sy;
-    if(!decided){
-      if(Math.abs(dx)<8 && Math.abs(dy)<8) return;
-      decided=true;
-      if(Math.abs(dy) > Math.abs(dx)){ dragging=false; return; }
-      try{ el.setPointerCapture(e.pointerId); }catch(_){}
-    }
-    if(dx<0) dx=0;
-    el.style.transform="translateX("+dx+"px)";
-  });
-  const end=e=>{
-    if(!dragging) return; dragging=false;
-    try{ el.releasePointerCapture(e.pointerId); }catch(_){}
-    const v=dx/Math.max(1, performance.now()-t0);
-    if(dx > el.clientWidth*0.35 || v > 0.6){ onClose(); }
-    else { el.style.transition="transform .45s var(--spring)"; el.style.transform="translateX(0)"; }
-  };
-  el.addEventListener("pointerup", end);
-  el.addEventListener("pointercancel", end);
-}
-/* キーボード追従: ページの高さを visualViewport に合わせる */
-function _attachKeyboardFit(el){
-  const vv=window.visualViewport; if(!vv) return;
-  const fn=()=>{ el.style.height=Math.round(vv.height)+"px"; el.style.top=Math.round(vv.offsetTop)+"px"; };
-  el._vvfn=fn; vv.addEventListener("resize", fn); vv.addEventListener("scroll", fn);
-}
-function _detachKeyboardFit(el){
-  const vv=window.visualViewport; if(!vv || !el || !el._vvfn) return;
-  vv.removeEventListener("resize", el._vvfn); vv.removeEventListener("scroll", el._vvfn); el._vvfn=null;
+  setTimeout(fin, 260);
 }
 function _fillPage(el, title, body){
   el.innerHTML =
@@ -320,8 +272,7 @@ function openSheet(html){
   _edEl=document.createElement("div"); _edEl.className="edpage"; document.body.appendChild(_edEl);
   _fillPage(_edEl, title, body);
   _sheetOpen=true;
-  _attachEdgeBack(_edEl, ()=>closeSheet());
-  _attachKeyboardFit(_edEl);
+  _lockBody();
   _pageIn(_edEl);
 }
 function closeSheet(){
@@ -329,7 +280,7 @@ function closeSheet(){
   if(_onSheetClose){ const cb=_onSheetClose; _onSheetClose=null; try{ cb(); }catch(e){} }
   if(window._syncResume) setTimeout(window._syncResume, 400);
   const el=_edEl; _edEl=null; if(!el) return;
-  _detachKeyboardFit(el);
+  _unlockBody();
   _pageOut(el, ()=>el.remove());
 }
 
@@ -340,12 +291,14 @@ function openDialog(html){
   const ov=document.createElement("div"); ov.className="dlg-ov";
   ov.innerHTML='<div class="dlg sheet" role="dialog" aria-modal="true">'+html+'</div>';
   document.body.appendChild(ov); _dlgEl=ov; _dlgOpen=true;
+  _lockBody();
   requestAnimationFrame(()=>ov.classList.add("on"));
   ov.addEventListener("click", e=>{ if(e.target===ov) closeDialog(); });
 }
 function closeDialog(silent){
   if(!_dlgOpen) return; _dlgOpen=false;
   const el=_dlgEl; _dlgEl=null;
+  _unlockBody();
   if(el){ el.classList.remove("on"); setTimeout(()=>el.remove(), 220); }
   if(!silent && window._syncResume) setTimeout(window._syncResume, 400);
 }
@@ -953,7 +906,7 @@ function openHesan(force){
     flushLocal();
     if(pushObj!==false && window._draftSync) _draftSync.push(pushObj);
     document.removeEventListener("visibilitychange", onVis);
-    _detachKeyboardFit(page);
+    _unlockBody();
     _pageOut(page, ()=>page.remove());
     if(window._syncResume) setTimeout(window._syncResume, 400);   // 閉じたら同期を再開して 1 回取り込む
   }
@@ -990,8 +943,7 @@ function openHesan(force){
   }
   document.addEventListener("visibilitychange", onVis);
   build();
-  _attachEdgeBack(page, ()=>closeHesan());
-  _attachKeyboardFit(page);
+  _lockBody();
   _pageIn(page);
   /* リモート(draft.json)の下書きが新しければ取り込む(まだ打ち始めていない時だけ)。
      前回オフラインで送れなかった下書きがあれば、黙って上書きせず本人に選ばせる。 */
