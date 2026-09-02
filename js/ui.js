@@ -4,12 +4,25 @@
    Logic identical to the verified single-file version; only the
    markup styling and a native (zero-dependency) motion layer change.
    Pure compute/data/storage live in their own files, untouched.
+
+   [2026-09-01 改修] 対応番号は HANDBOOK §13.10 / §14 を参照。
+   - 月の生命周期: 今日の月は自動作成・仮/確定の繰越金・「›」は翌月まで
+     (BUG-20260901-01/-04/-05/-06, REV-20260901-05)
+   - 入力: 半角数字以外は保存せず警告・毎回の書き込みに回執トースト
+     (BUG-20260901-02/-03/-08/-15/-16/-17)
+   - 固定費: 引き落とし総額のみ入力でも合計に含める(-07)
+   - 編集は全画面ページ(端から戻るスワイプ・キーボード追従)(REV-01)
+   - 精算下書きの衝突確認・設定後の下書き削除・月違いガード(-12/-13/-14)
+   - 分類の統合(REV-02)・東京外ロック(REV-03)・現金未使用の表示(REV-04)
+   storage.js / compute.js / main.js(凍結)は不変。関数の差し替えは
+   save / fixedTotal の 2 つだけ(どちらも「包む」だけで元は呼ぶ)。
    ============================================================ */
 
 /* ---------------- last-modified time + save hook ---------------- */
 // Stamp the data's last-modified time on every save — done here so storage.js stays byte-identical.
+// 同時に「仮」の繰越金を前月残高へ追従させる(_refreshCarry: 今月・来月のみ)。
 const _origSave = save;
-save = function(){ db.lastModified = Date.now(); return _origSave.apply(this, arguments); };
+save = function(){ db.lastModified = Date.now(); try{ _refreshCarry(); }catch(e){} return _origSave.apply(this, arguments); };
 function relTime(ts){
   const diff = Date.now() - ts;
   if(diff < 60000) return "たった今";
@@ -26,11 +39,27 @@ function updateLastmod(){
   el.innerHTML = '<span class="dot"></span>最終更新 ' + relTime(db.lastModified);
 }
 
+/* ---------------- fixedTotal を包む (BUG-20260901-07) ----------------
+   「引き落とし総額」だけ入力して「電気」が未入力のとき、compute.js の
+   fixedTotal は総額を分解できず賃料+管理費しか数えない(総額が消える)。
+   ここでは総額をそのまま数える。両方入力済みなら従来の計算(同値)。 */
+const _fixedTotalBase = fixedTotal;
+fixedTotal = function(key){
+  const mo=db.months[key], f=mo&&mo.fixed;
+  if(f && f.totalDebit!=null && f.denki==null){
+    let t=f.totalDebit+(f.gas||0)+(f.water||0); (f.extra||[]).forEach(x=>t+=(x.amount||0)); return t;
+  }
+  return _fixedTotalBase(key);
+};
+
+/* HTML エスケープ(分類名・人名・その他固定費名を属性/本文に埋める時) (BUG-20260901-16) */
+function esc(v){ return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
 /* ============================================================
-   navigation guards / launch month / jump-to-current  (added)
-   - 起動: 「今日を超えない最新の月」を開く(未来の幽霊月で固定されない)
+   navigation guards / launch month / jump-to-current
+   - 起動: 「今日を超えない最新の月」を開く → 初回同期後に ensureToday が今月を作って移動
    - 「‹」: 最も古い実データ月で停止(誤タップ防止)
-   - 「›」: 当月を超える新規作成は確認してから(誤タップ防止)
+   - 「›」: 翌月までは確認して作成、それより先は作成不可(REV-20260901-05)
    - 月ラベルのタップ: 当月へ戻る
    いずれも本ファイル(ui.js)内のみ。storage/compute/main(凍結)は不変。
    ============================================================ */
@@ -56,10 +85,76 @@ function _latestUpToToday(){
 /* 起動時に active を「今日を超えない最新の月」に固定(main.js の render より前に実行) */
 active=_latestUpToToday();
 
+/* ============================================================
+   東京外ロック (REV-20260901-03)
+   端末の時計のタイムゾーンが Asia/Tokyo でなければ書き込みを全て止める。
+   (判定は時計設定であり GPS ではない。iPhone「日付と時刻」自動なら現地で変わる)
+   ============================================================ */
+function _zoneName(){ try{ return (Intl.DateTimeFormat().resolvedOptions().timeZone)||""; }catch(e){ return ""; } }
+function _zoneLocked(){ const z=_zoneName(); if(z) return z!=="Asia/Tokyo"; return new Date().getTimezoneOffset()!==-540; }
+let _zoneLockedNow=_zoneLocked();
+function _renderZoneBar(){
+  let bar=document.getElementById("zonebar");
+  if(!_zoneLockedNow){ if(bar) bar.remove(); return; }
+  if(!bar){
+    bar=document.createElement("div"); bar.id="zonebar"; bar.className="zonebar";
+    const nav=document.querySelector(".month");
+    if(nav && nav.parentNode) nav.parentNode.insertBefore(bar, nav.nextSibling); else document.body.prepend(bar);
+  }
+  bar.innerHTML='<span class="zl">🔒</span><div><b>今のエリアが東京ではないため、記帳をロックしています。</b><br>旅行中はメモに残し、東京に戻ってから入力してください。</div>';
+}
+/* 書き込み系の入口で呼ぶ。ロック中なら知らせて true */
+function _writeBlocked(){ if(_zoneLockedNow){ toast("🔒 東京の外では記帳・編集できません","warn"); return true; } return false; }
+
+/* ============================================================
+   月の生命周期 (BUG-20260901-01/-04/-05)
+   - ensureToday(): 今日の月が無ければ作る(唯一の自動作成)。月替わりなら今月へ移動。
+     呼び元: 初回同期後 / 画面復帰 / online / 30秒ごと。
+   - 繰越金の状態: startConfirmed が無い = 仮(自動)。仮の間は前月残高に追従し、
+     精算「設定」または入金編集で手を入れた時に確定(以後は人以外触らない)。
+     追従・表示の対象は「今月」と「来月」だけ。過去の月には一切触れない。
+   ============================================================ */
+let _seenYM=_nowYM(), _userNav=false;
+function _carryTargets(){ const now=_nowYM(); return [now, shiftMonth(now,1)]; }
+function _isCarryMonth(k){ return _carryTargets().indexOf(k)>=0; }
+function _isKari(k){ const m=db.months[k]; return !!m && !m.startConfirmed && _isCarryMonth(k); }
+function _refreshCarry(){
+  if(_zoneLockedNow) return false;
+  let changed=false;
+  _carryTargets().forEach(k=>{
+    const m=db.months[k]; if(!m || m.startConfirmed) return;
+    const p=shiftMonth(k,-1); if(!db.months[p]) return;
+    const v=Math.round(balance(p));
+    if(m.start!==v){ m.start=v; changed=true; }
+  });
+  return changed;
+}
+function ensureToday(opts){
+  _zoneLockedNow=_zoneLocked(); _renderZoneBar();
+  if(_zoneLockedNow) return;                       // ロック中は作らない・書かない
+  const now=_nowYM(); const rolled=(now!==_seenYM); _seenYM=now;
+  let created=false;
+  if(!db.months[now]){ ensureMonth(now); created=true; }    // ensureMonth → save → 追従
+  const startup=!!(opts && opts.startup);
+  let need=false;
+  if(_refreshCarry()){ save(); need=true; }
+  const jump = rolled || created || (startup && !_userNav);
+  if(jump && active!==now){
+    active=now; need=true;
+    const mm=Number(now.split("-")[1]);
+    setTimeout(()=>_flashMonthLabel(mm+"月になりました"), 60);
+  }
+  if(need && typeof render==="function") render();
+}
+window._ensureToday=ensureToday;
+window._refreshCarry=_refreshCarry;
+window._afterFirstSync=function(){ ensureToday({startup:true}); };
+
 /* 月ナビの境界: .mnav にキャプチャ段で割り込み、main.js のボタン処理より先に判定 */
 (function bindMonthNavGuards(){
   const mnav=document.querySelector(".mnav"); if(!mnav) return;
   mnav.addEventListener("click", function(e){
+    _userNav=true;
     if(e.target.closest("#prev")){
       const target=shiftMonth(active,-1), floor=_earliestRealKey();
       if(floor && target<floor && !db.months[target]){
@@ -67,30 +162,34 @@ active=_latestUpToToday();
         _flashMonthLabel("これより前の記録はありません");
       }
     } else if(e.target.closest("#next")){
-      const target=shiftMonth(active,1);
-      if(target>_nowYM() && !db.months[target]){
-        e.stopPropagation(); e.preventDefault();
-        _confirmCreateFuture(target);
+      const target=shiftMonth(active,1), now=_nowYM();
+      if(!db.months[target]){
+        if(_zoneLockedNow){ e.stopPropagation(); e.preventDefault(); _flashMonthLabel("ロック中は作成できません"); return; }
+        if(target>now){
+          e.stopPropagation(); e.preventDefault();
+          if(target===shiftMonth(now,1)) _confirmCreateFuture(target);
+          else _flashMonthLabel("翌月までしか作成できません");
+        }
       }
     }
   }, true);
 }());
 
-/* 当月を超える未来月の新規作成: ボトムシートで確認 */
+/* 翌月の新規作成: 小さな確認ダイアログ */
 function _confirmCreateFuture(target){
-  openSheet('<h2>まだ来ていない月です</h2>'
+  openDialog('<h2>まだ来ていない月です</h2>'
     +'<div class="desc">'+labelOf(target)+' はまだ始まっていません。新しい月を作成して移動しますか?</div>'
     +'<button class="sheetbtn" id="cf-yes">作成して移動</button>'
     +'<button class="sheetbtn ghost" id="cf-no">やめる</button>');
-  document.getElementById("cf-yes").addEventListener("click", function(){ active=target; ensureMonth(active); closeSheet(); render(); });
-  document.getElementById("cf-no").addEventListener("click", function(){ closeSheet(); });
+  document.getElementById("cf-yes").addEventListener("click", function(){ closeDialog(true); active=target; ensureMonth(active); render(); });
+  document.getElementById("cf-no").addEventListener("click", function(){ closeDialog(); });
 }
 
 /* 月ラベルのタップで当月へ戻る */
 (function bindJumpToCurrent(){
   const lab=document.getElementById("monthlabel"); if(!lab) return;
   lab.style.cursor="pointer"; lab.title="今月へ";
-  lab.addEventListener("click", function(){ const t=_latestUpToToday(); if(t && t!==active){ active=t; render(); } });
+  lab.addEventListener("click", function(){ _userNav=true; const t=_latestUpToToday(); if(t && t!==active){ active=t; render(); } });
 }());
 
 /* 旧仕様の下書き(mo.hesan)を見つけ次第すべて削除する。
@@ -126,6 +225,7 @@ function springSample(stiffness, damping, mass){
 }
 // presets tuned to the brief (stiffness 260–380 / damping 24–34 / mass 0.8–1.1)
 const SP_SHEET = springSample(320, 30, 1.0);   // sheet settle — barely any overshoot
+const SP_PAGE  = springSample(300, 32, 1.0);   // full page slide-in — no overshoot
 
 // animate a transform along a spring (interruptible); build(value)->transform string
 function springAnim(el, build, p0, p1, preset, onDone){
@@ -137,60 +237,178 @@ function springAnim(el, build, p0, p1, preset, onDone){
   return anim;
 }
 
-/* ---------------- floating bottom sheet ---------------- */
-const overlay = document.getElementById("overlay"), sheet = document.getElementById("sheet");
-let _sheetOpen = false;
-function openSheet(html){
-  const content = '<div class="sheet-grab" aria-hidden="true"></div>' + html;
-  if(_sheetOpen){ sheet.innerHTML = content; attachSheetDrag(); return; } // already open: swap, no re-animate
-  sheet.innerHTML = content; attachSheetDrag();
-  sheet.style.transition = "none";
-  sheet.style.transform = "translateY(100%)";
-  overlay.classList.add("on");
-  _sheetOpen = true; sheet.scrollTop = 0;
+/* ============================================================
+   フルページ編集 (REV-20260901-01)
+   openSheet(html)/closeSheet() の名前と引数はそのまま(各編集器は無変更で
+   呼べる)。中身は右からスライドする全画面ページ。h2 は上部タイトルへ、
+   最初の主ボタン(.sheetbtn / ghost・danger 以外)は下部の固定フッターへ移す。
+   端(左 28px)からの右スワイプで戻る。キーボードが出たら visualViewport に
+   合わせて高さを詰める(フッターがキーボードの上に乗る)。
+   ============================================================ */
+let _sheetOpen = false, _onSheetClose = null, _edEl = null;
+function _pageIn(el){
+  el.style.transform = "translateX(100%)";
   requestAnimationFrame(() => {
-    if(REDUCED){ sheet.style.transform = "translateY(0)"; return; }
-    springAnim(sheet, v => "translateY(" + v + "%)", 100, 0, SP_SHEET);
+    if(REDUCED || !el.animate){ el.style.transform = "translateX(0)"; return; }
+    springAnim(el, v => "translateX(" + v + "%)", 100, 0, SP_PAGE);
   });
 }
-let _onSheetClose = null;
+function _pageOut(el, done){
+  if(REDUCED || !el.animate){ done(); return; }
+  let fired=false; const fin=()=>{ if(fired) return; fired=true; el.removeEventListener("transitionend", fin); done(); };
+  el.style.transition = "transform .3s cubic-bezier(.4,0,1,1)";
+  el.style.transform = "translateX(100%)";
+  el.addEventListener("transitionend", fin);
+  setTimeout(fin, 420);
+}
+/* 端からの戻るスワイプ(端末の戻るジェスチャの代わり・ホーム画面 PWA には無い) */
+function _attachEdgeBack(el, onClose){
+  let sx=0, sy=0, dx=0, dragging=false, decided=false, t0=0;
+  el.addEventListener("pointerdown", e=>{
+    if(e.clientX > 28 || e.pointerType==="mouse") return;
+    dragging=true; decided=false; sx=e.clientX; sy=e.clientY; dx=0; t0=performance.now(); el.style.transition="none";
+  });
+  el.addEventListener("pointermove", e=>{
+    if(!dragging) return;
+    dx=e.clientX-sx; const dy=e.clientY-sy;
+    if(!decided){
+      if(Math.abs(dx)<8 && Math.abs(dy)<8) return;
+      decided=true;
+      if(Math.abs(dy) > Math.abs(dx)){ dragging=false; return; }
+      try{ el.setPointerCapture(e.pointerId); }catch(_){}
+    }
+    if(dx<0) dx=0;
+    el.style.transform="translateX("+dx+"px)";
+  });
+  const end=e=>{
+    if(!dragging) return; dragging=false;
+    try{ el.releasePointerCapture(e.pointerId); }catch(_){}
+    const v=dx/Math.max(1, performance.now()-t0);
+    if(dx > el.clientWidth*0.35 || v > 0.6){ onClose(); }
+    else { el.style.transition="transform .45s var(--spring)"; el.style.transform="translateX(0)"; }
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+}
+/* キーボード追従: ページの高さを visualViewport に合わせる */
+function _attachKeyboardFit(el){
+  const vv=window.visualViewport; if(!vv) return;
+  const fn=()=>{ el.style.height=Math.round(vv.height)+"px"; el.style.top=Math.round(vv.offsetTop)+"px"; };
+  el._vvfn=fn; vv.addEventListener("resize", fn); vv.addEventListener("scroll", fn);
+}
+function _detachKeyboardFit(el){
+  const vv=window.visualViewport; if(!vv || !el || !el._vvfn) return;
+  vv.removeEventListener("resize", el._vvfn); vv.removeEventListener("scroll", el._vvfn); el._vvfn=null;
+}
+function _fillPage(el, title, body){
+  el.innerHTML =
+    '<div class="hp-top"><button class="iconbtn" id="ed-back" aria-label="戻る"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>'
+    + '<div class="hp-title">'+title+'</div></div>'
+    + '<div class="hp-scroll sheet" id="ed-body">'+body+'</div>'
+    + '<div class="ed-foot" id="ed-foot"></div>';
+  const bodyEl=el.querySelector("#ed-body"), foot=el.querySelector("#ed-foot");
+  const prim=Array.from(bodyEl.querySelectorAll(".sheetbtn")).find(b=>!b.classList.contains("ghost") && !b.classList.contains("danger"));
+  if(prim) foot.appendChild(prim); else foot.remove();
+  el.querySelector("#ed-back").addEventListener("click", ()=>closeSheet());
+  bodyEl.scrollTop=0;
+}
+function openSheet(html){
+  const m = html.match(/<h2[^>]*>([\s\S]*?)<\/h2>/);
+  const title = m ? m[1] : "";
+  const body  = m ? html.replace(m[0], "") : html;
+  if(_sheetOpen && _edEl){ _fillPage(_edEl, title, body); return; }   // already open: swap, no re-animate
+  _edEl=document.createElement("div"); _edEl.className="edpage"; document.body.appendChild(_edEl);
+  _fillPage(_edEl, title, body);
+  _sheetOpen=true;
+  _attachEdgeBack(_edEl, ()=>closeSheet());
+  _attachKeyboardFit(_edEl);
+  _pageIn(_edEl);
+}
 function closeSheet(){
   if(!_sheetOpen) return; _sheetOpen = false;
   if(_onSheetClose){ const cb=_onSheetClose; _onSheetClose=null; try{ cb(); }catch(e){} }
   if(window._syncResume) setTimeout(window._syncResume, 400);
-  if(REDUCED || !sheet.animate){ overlay.classList.remove("on"); sheet.innerHTML = ""; return; }
-  sheet.style.transition = "transform .34s cubic-bezier(.4,0,1,1)";
-  sheet.style.transform = "translateY(106%)";
-  const done = () => {
-    overlay.classList.remove("on");
-    sheet.style.transition = "none"; sheet.style.transform = "translateY(0)"; sheet.innerHTML = "";
-    sheet.removeEventListener("transitionend", done);
-  };
-  sheet.addEventListener("transitionend", done);
+  const el=_edEl; _edEl=null; if(!el) return;
+  _detachKeyboardFit(el);
+  _pageOut(el, ()=>el.remove());
 }
-function attachSheetDrag(){
-  const grab = sheet.querySelector(".sheet-grab"); if(!grab) return;
-  let startY = 0, lastY = 0, lastT = 0, vel = 0, dy = 0, dragging = false;
-  grab.addEventListener("pointerdown", e => {
-    dragging = true; startY = lastY = e.clientY; lastT = performance.now(); vel = 0; dy = 0;
-    sheet.style.transition = "none"; try{ grab.setPointerCapture(e.pointerId); }catch(_){}
-  });
-  grab.addEventListener("pointermove", e => {
-    if(!dragging) return;
-    dy = e.clientY - startY; if(dy < 0) dy = dy * 0.22;            // rubber-band pulling up
-    const now = performance.now(), dt = now - lastT; if(dt > 0) vel = (e.clientY - lastY) / dt;
-    lastY = e.clientY; lastT = now;
-    sheet.style.transform = "translateY(" + dy + "px)";
-  });
-  const end = e => {
-    if(!dragging) return; dragging = false; try{ grab.releasePointerCapture(e.pointerId); }catch(_){}
-    if(dy > 120 || vel > 0.7){ closeSheet(); }
-    else { sheet.style.transition = "transform .5s var(--spring)"; sheet.style.transform = "translateY(0)"; }
-  };
-  grab.addEventListener("pointerup", end);
-  grab.addEventListener("pointercancel", end);
+
+/* ---------------- 小さな確認ダイアログ(はい/いいえ 用・中央) ---------------- */
+let _dlgOpen=false, _dlgEl=null;
+function openDialog(html){
+  if(_dlgOpen) closeDialog(true);
+  const ov=document.createElement("div"); ov.className="dlg-ov";
+  ov.innerHTML='<div class="dlg sheet" role="dialog" aria-modal="true">'+html+'</div>';
+  document.body.appendChild(ov); _dlgEl=ov; _dlgOpen=true;
+  requestAnimationFrame(()=>ov.classList.add("on"));
+  ov.addEventListener("click", e=>{ if(e.target===ov) closeDialog(); });
 }
-overlay.addEventListener("click", e => { if(e.target === overlay) closeSheet(); });
+function closeDialog(silent){
+  if(!_dlgOpen) return; _dlgOpen=false;
+  const el=_dlgEl; _dlgEl=null;
+  if(el){ el.classList.remove("on"); setTimeout(()=>el.remove(), 220); }
+  if(!silent && window._syncResume) setTimeout(window._syncResume, 400);
+}
+/* はい/いいえ を Promise で受け取る */
+function _confirmDialog(text, yesLabel, noLabel, danger){
+  return new Promise(res=>{
+    openDialog('<div class="desc" style="margin-top:6px">'+text+'</div>'
+      +'<button class="sheetbtn '+(danger?'danger':'')+'" id="cd-yes">'+esc(yesLabel||"はい")+'</button>'
+      +'<button class="sheetbtn ghost" id="cd-no">'+esc(noLabel||"やめる")+'</button>');
+    document.getElementById("cd-yes").addEventListener("click", ()=>{ closeDialog(true); res(true); });
+    document.getElementById("cd-no").addEventListener("click", ()=>{ closeDialog(true); res(false); });
+  });
+}
+
+/* ---------------- 回執トースト (BUG-20260901-03) ---------------- */
+let _toastT=null;
+function toast(msg, kind){
+  let el=document.getElementById("toast");
+  if(!el){ el=document.createElement("div"); el.id="toast"; document.body.appendChild(el); }
+  el.className="toast"+(kind?" "+kind:"");
+  el.textContent=msg;
+  el.classList.remove("on"); void el.offsetWidth; el.classList.add("on");
+  clearTimeout(_toastT); _toastT=setTimeout(()=>el.classList.remove("on"), 2600);
+}
+
+/* ---------------- 金額入力の検査 (BUG-20260901-08) ----------------
+   半角数字(と + - * / ( ) . )以外は受け付けず、その場で欄を赤くして理由を出す。
+   保存はしない。空欄・0・マイナスの扱いは入口ごとに opt で指定。 */
+const _RE_BAD=/[０-９，,¥￥]/;
+function _checkAmount(raw, opt){
+  opt=opt||{};
+  const s=String(raw==null?"":raw).trim();
+  if(!s) return opt.allowEmpty ? {ok:true,v:null} : {ok:false,msg:"金額を入力してください ✏️"};
+  if(_RE_BAD.test(s)) return {ok:false,msg:"半角の数字だけでお願いします（カンマ・全角・¥ は使えません）✏️"};
+  const v=evalExpr(s);
+  if(v==null) return {ok:false,msg:"計算できませんでした。数字か 5349+890 のような式で ✏️"};
+  if(v===0 && opt.allowZero===false) return {ok:false,msg:"0 円は記録できません ✏️"};
+  if(v<0 && opt.allowNegative===false) return {ok:false,msg:"マイナスの金額は記録できません ✏️"};
+  return {ok:true,v:v};
+}
+function _fieldHost(inp){ return inp.closest(".field")||inp.closest(".qrow")||inp.closest(".amt-in")||inp; }
+function _markBad(inp, msg){
+  const host=_fieldHost(inp), wrap=inp.closest(".amt-in")||inp;
+  inp.classList.add("bad"); wrap.classList.add("bad");
+  let err=host.nextElementSibling;
+  if(!err || !err.classList.contains("fielderr")){ err=document.createElement("div"); err.className="fielderr"; host.insertAdjacentElement("afterend", err); }
+  err.textContent=msg;
+  wrap.classList.remove("shake"); void wrap.offsetWidth; wrap.classList.add("shake");
+  inp.addEventListener("input", ()=>_clearBad(inp), {once:true});
+}
+function _clearBad(inp){
+  inp.classList.remove("bad"); const w=inp.closest(".amt-in"); if(w) w.classList.remove("bad");
+  const host=_fieldHost(inp), err=host.nextElementSibling; if(err && err.classList.contains("fielderr")) err.remove();
+}
+/* id か要素を受け取り検査。NG なら欄に印を付けて {ok:false} */
+function _readAmt(idOrEl, opt){
+  const inp=(typeof idOrEl==="string")?document.getElementById(idOrEl):idOrEl;
+  if(!inp) return {ok:true, v:null, el:null};
+  const r=_checkAmount(inp.value, opt); r.el=inp;
+  if(!r.ok) _markBad(inp, r.msg);
+  return r;
+}
+function _focusFirstBad(){ const b=document.querySelector(".finput.bad, .amt-in.bad input, input.bad"); if(b && b.focus) try{ b.focus({preventScroll:false}); }catch(e){} }
 
 /* ---------------- number roll ---------------- */
 function rollNumber(el, from, to){
@@ -204,18 +422,29 @@ function rollNumber(el, from, to){
   requestAnimationFrame(step);
 }
 
-/* ---------------- editors (logic verbatim; restyled markup) ---------------- */
+/* 現金サブ台帳: 最後に動きがあった月の翌月から今日まで 1 ヶ月以上空いていればその開始月 (REV-20260901-04) */
+function _cashUnusedSince(){
+  const keys=monthsAsc(); let last=null, first=null;
+  keys.forEach(k=>{ const m=db.months[k]; if(!m || !m.cash) return; if(!first) first=k; if((m.cash.deposit||0)>0 || cashSpent(k)>0) last=k; });
+  if(!first) return null;
+  const since=last?shiftMonth(last,1):first;
+  return since<_nowYM() ? since : null;
+}
+
+/* ---------------- editors (logic verbatim + 入力検査 + 回執) ---------------- */
+function _snapVal(raw, old){ const s=String(raw==null?"":raw).trim(); if(!s) return null; const v=evalExpr(s); return v==null?old:v; }
 function editFixed(){
+  if(_writeBlocked()) return;
   const k0=active;                                  // 開いた月のキーだけ保持(オブジェクト参照は保持しない)
   const f=db.months[k0].fixed;                      // 表示用スナップショット
-  let extraHtml=(f.extra||[]).map((x,i)=>`<div class="frow" style="align-items:flex-end;margin-bottom:14px"><div class="field" style="margin-bottom:0"><label>その他の名前</label><input class="finput" data-ex="name" data-i="${i}" value="${x.name||""}"></div><div class="field" style="margin-bottom:0"><label>金額</label><input class="finput num" data-ex="amount" data-i="${i}" inputmode="numeric" value="${x.amount!=null?x.amount:""}"></div><button class="del" data-rmex="${i}" style="margin-bottom:10px">×</button></div>`).join("");
+  let extraHtml=(f.extra||[]).map((x,i)=>`<div class="frow" style="align-items:flex-end;margin-bottom:14px"><div class="field" style="margin-bottom:0"><label>その他の名前</label><input class="finput" data-ex="name" data-i="${i}" value="${esc(x.name||"")}"></div><div class="field" style="margin-bottom:0"><label>金額</label><input class="finput num" data-ex="amount" data-i="${i}" inputmode="numeric" value="${x.amount!=null?x.amount:""}"></div><button class="del" data-rmex="${i}" style="margin-bottom:10px">×</button></div>`).join("");
   openSheet(`<h2>固定費の編集</h2>
-    <div class="desc">賃料・管理費は自動入力(変更可)。「引き落とし総額」と「電気」を入れると保証料を自動で逆算します。ガス・水道は手入力。</div>
+    <div class="desc">賃料・管理費は自動入力(変更可)。「引き落とし総額」と「電気」を入れると保証料を自動で逆算します。総額だけ入れた場合も合計に含まれます。ガス・水道は手入力。</div>
     <div class="frow"><div class="field"><label>賃料</label><input class="finput num" id="f-rent" inputmode="numeric" value="${f.rent!=null?f.rent:""}"></div>
       <div class="field"><label>管理費</label><input class="finput num" id="f-mgmt" inputmode="numeric" value="${f.mgmt!=null?f.mgmt:""}"></div></div>
     <div class="field"><label>引き落とし総額 <span class="hint">(賃料+管理費+保証料+電気)</span></label><input class="finput num" id="f-total" inputmode="numeric" value="${f.totalDebit!=null?f.totalDebit:""}"></div>
     <div class="field"><label>電気</label><input class="finput num" id="f-denki" inputmode="numeric" value="${f.denki!=null?f.denki:""}"></div>
-    <div class="computed"><span>保証料 + 引落手数料(自動)</span><span id="f-hosho">—</span></div>
+    <div class="computed"><span>保証料 + 引落手数料(自動)</span><span id="f-hosho">未入力</span></div>
     <div style="height:13px"></div>
     <div class="frow"><div class="field"><label>ガス</label><input class="finput num" id="f-gas" inputmode="numeric" value="${f.gas!=null?f.gas:""}"></div>
       <div class="field"><label>水道</label><input class="finput num" id="f-water" inputmode="numeric" value="${f.water!=null?f.water:""}"></div></div>
@@ -225,46 +454,68 @@ function editFixed(){
   function recompute(){
     const t=evalExpr(g("f-total")), d=evalExpr(g("f-denki")), r=evalExpr(g("f-rent")), m=evalExpr(g("f-mgmt"));
     const el=document.getElementById("f-hosho");
-    if(t!=null&&d!=null){ el.textContent=fmt(t-(r||0)-(m||0)-d); } else el.textContent="—";
+    if(t!=null&&d!=null){ el.textContent=fmt(t-(r||0)-(m||0)-d); } else el.textContent= t!=null ? "未入力(総額で計上)" : "未入力";
   }
   function g(id){ const e=document.getElementById(id); return e?e.value:""; }
   ["f-total","f-denki","f-rent","f-mgmt"].forEach(id=>document.getElementById(id).addEventListener("input",recompute));
   recompute();
-  function snap(){ const f=db.months[k0].fixed;  // 書き込みは常に生きている月へ
-    f.rent=evalExpr(g("f-rent")); f.mgmt=evalExpr(g("f-mgmt")); f.totalDebit=evalExpr(g("f-total")); f.denki=evalExpr(g("f-denki")); f.gas=evalExpr(g("f-gas")); f.water=evalExpr(g("f-water")); document.querySelectorAll('[data-ex]').forEach(inp=>{ const i=+inp.dataset.i,kk=inp.dataset.ex; if(f.extra[i]) f.extra[i][kk]= kk==="amount"?evalExpr(inp.value):inp.value; }); }
+  function snap(){ const f=db.months[k0].fixed;  // 書き込みは常に生きている月へ(未保存の一時スナップ・不正な文字列は旧値を保つ)
+    f.rent=_snapVal(g("f-rent"),f.rent); f.mgmt=_snapVal(g("f-mgmt"),f.mgmt); f.totalDebit=_snapVal(g("f-total"),f.totalDebit); f.denki=_snapVal(g("f-denki"),f.denki); f.gas=_snapVal(g("f-gas"),f.gas); f.water=_snapVal(g("f-water"),f.water);
+    document.querySelectorAll('[data-ex]').forEach(inp=>{ const i=+inp.dataset.i,kk=inp.dataset.ex; if(f.extra[i]) f.extra[i][kk]= kk==="amount"?_snapVal(inp.value,f.extra[i].amount):inp.value; }); }
   document.getElementById("f-addextra").addEventListener("click",()=>{ const f=db.months[k0].fixed; f.extra=f.extra||[]; snap(); f.extra.push({name:"",amount:null}); editFixedReopen(); });
   document.querySelectorAll('[data-rmex]').forEach(b=>b.addEventListener("click",()=>{ const f=db.months[k0].fixed; snap(); f.extra.splice(+b.dataset.rmex,1); editFixedReopen(); }));
   document.getElementById("f-save").addEventListener("click",()=>{
+    if(_writeBlocked()) return;
+    const vals={}; let bad=false;
+    ["f-rent","f-mgmt","f-total","f-denki","f-gas","f-water"].forEach(id=>{ const r=_readAmt(id,{allowEmpty:true}); if(!r.ok) bad=true; else vals[id]=r.v; });
+    const exs=[];
+    document.querySelectorAll('[data-ex]').forEach(inp=>{ const i=+inp.dataset.i, k=inp.dataset.ex;
+      if(k==="amount"){ const r=_readAmt(inp,{allowEmpty:true}); if(!r.ok) bad=true; else exs.push({i,k,v:r.v}); }
+      else exs.push({i,k,v:inp.value}); });
+    if(bad){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     const f=db.months[k0].fixed;                    // 保存の瞬間に取り直す(同期で db が入れ替わっても生きている方に書く)
-    f.rent=evalExpr(g("f-rent")); f.mgmt=evalExpr(g("f-mgmt")); f.totalDebit=evalExpr(g("f-total"));
-    f.denki=evalExpr(g("f-denki")); f.gas=evalExpr(g("f-gas")); f.water=evalExpr(g("f-water"));
-    document.querySelectorAll('[data-ex]').forEach(inp=>{
-      const i=+inp.dataset.i, k=inp.dataset.ex; f.extra=f.extra||[]; if(!f.extra[i]) return;
-      f.extra[i][k]= k==="amount"?evalExpr(inp.value):inp.value;
-    });
+    f.rent=vals["f-rent"]; f.mgmt=vals["f-mgmt"]; f.totalDebit=vals["f-total"];
+    f.denki=vals["f-denki"]; f.gas=vals["f-gas"]; f.water=vals["f-water"];
+    f.extra=f.extra||[]; exs.forEach(x=>{ if(f.extra[x.i]) f.extra[x.i][x.k]=x.v; });
     f.extra=(f.extra||[]).filter(x=>x.name||x.amount!=null);
     save(); closeSheet(); render();
+    toast(labelOf(k0)+" の固定費を保存しました ✓");
   });
 }
 function editFixedReopen(){ editFixed(); }
 
 function editIncome(){
+  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0];
-  let rows=mo.income.map((i,idx)=>`<div class="frow"><div class="field"><label>名前</label><input class="finput" data-in="who" data-i="${idx}" value="${i.who}"></div><div class="field"><label>入金額</label><input class="finput num" data-in="amount" data-i="${idx}" inputmode="numeric" value="${i.amount!=null?i.amount:""}"></div></div>`).join("");
+  const kari=_isKari(k0);
+  let rows=mo.income.map((i,idx)=>`<div class="frow"><div class="field"><label>名前</label><input class="finput" data-in="who" data-i="${idx}" value="${esc(i.who)}"></div><div class="field"><label>入金額</label><input class="finput num" data-in="amount" data-i="${idx}" inputmode="numeric" value="${i.amount!=null?i.amount:""}"></div></div>`).join("");
   openSheet(`<h2>入金 / 繰越金の編集</h2>
-    <div class="desc">「今月の繰越金」は通常は精算で設定しますが、ここでも直接変更できます。</div>
-    <div class="field"><label>今月の繰越金 <span class="hint">(＝先月の繰越)</span></label><input class="finput num" id="i-start" inputmode="numeric" value="${mo.start!=null?mo.start:""}"></div>
+    <div class="desc">「今月の繰越金」は通常は精算で設定しますが、ここでも直接変更できます。${kari?'<br><b>今は仮(自動)の値です。</b>ここで手を入れると確定扱いになり、以後は自動で変わりません。':''}</div>
+    <div class="field"><label>今月の繰越金 <span class="hint">(＝先月の繰越)</span>${kari?' <span class="chip-kari">仮</span>':(mo.startConfirmed&&_isCarryMonth(k0)?' <span class="chip-ok">確定</span>':'')}</label><input class="finput num" id="i-start" inputmode="numeric" value="${mo.start!=null?mo.start:""}"></div>
     <div style="height:6px"></div>${rows}
     <button class="sheetbtn" id="i-save">保存</button>`);
+  let touchedStart=false;
+  document.getElementById("i-start").addEventListener("input",()=>{ touchedStart=true; });
   document.getElementById("i-save").addEventListener("click",()=>{
+    if(_writeBlocked()) return;
+    let bad=false;
+    const rs=_readAmt("i-start",{allowEmpty:false}); if(!rs.ok) bad=true;
+    const inc=[];
+    document.querySelectorAll('[data-in]').forEach(inp=>{ const i=+inp.dataset.i,k=inp.dataset.in;
+      if(k==="amount"){ const r=_readAmt(inp,{allowEmpty:false}); if(!r.ok) bad=true; else inc.push({i,k,v:r.v}); }
+      else inc.push({i,k,v:inp.value}); });
+    if(bad){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     const mo=db.months[k0];                          // 保存の瞬間に取り直す
-    mo.start=evalExpr(document.getElementById("i-start").value)||0;
-    document.querySelectorAll('[data-in]').forEach(inp=>{ const i=+inp.dataset.i,k=inp.dataset.in; if(mo.income[i]) mo.income[i][k]= k==="amount"?(evalExpr(inp.value)||0):inp.value; });
+    mo.start=rs.v;
+    if(touchedStart) mo.startConfirmed=true;         // 人が触った繰越金は確定(以後は自動で変わらない)
+    inc.forEach(x=>{ if(mo.income[x.i]) mo.income[x.i][x.k]=x.v; });
     save(); closeSheet(); render();
+    toast(labelOf(k0)+" の入金/繰越金を保存しました"+(touchedStart?"（繰越金 確定）":"")+" ✓");
   });
 }
 function editCash(){
+  if(_writeBlocked()) return;
   const k0=active;
   const c=db.months[k0].cash||{start:0,deposit:0};   // 表示用。開いただけでは db に書かない
   openSheet(`<h2>現金の編集</h2>
@@ -273,73 +524,200 @@ function editCash(){
     <div class="field"><label>今月の引き出し額</label><input class="finput num" id="c-dep" inputmode="numeric" value="${c.deposit!=null?c.deposit:""}"></div>
     <button class="sheetbtn" id="c-save">保存</button>`);
   document.getElementById("c-save").addEventListener("click",()=>{
+    if(_writeBlocked()) return;
+    const a=_readAmt("c-start",{allowEmpty:false}), b=_readAmt("c-dep",{allowEmpty:false});
+    if(!a.ok||!b.ok){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     const mo=db.months[k0]; const cc=mo.cash||(mo.cash={start:0,deposit:0});   // 保存の瞬間に取り直す
-    cc.start=evalExpr(document.getElementById("c-start").value)||0; cc.deposit=evalExpr(document.getElementById("c-dep").value)||0;
+    cc.start=a.v; cc.deposit=b.v;
     save(); closeSheet(); render();
+    toast(labelOf(k0)+" の現金を保存しました ✓");
   });
 }
 function editVarTotals(){
+  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0];
-  let rows=mo.categories.map(cat=>`<div class="frow"><div class="field"><label>${cat}</label><input class="finput num" data-ct="${cat}" inputmode="numeric" value="${mo.categoryTotals[cat]!=null?mo.categoryTotals[cat]:""}"></div></div>`).join("");
+  let rows=mo.categories.map(cat=>`<div class="frow"><div class="field"><label>${esc(cat)}</label><input class="finput num" data-ct="${esc(cat)}" inputmode="numeric" value="${mo.categoryTotals[cat]!=null?mo.categoryTotals[cat]:""}"></div></div>`).join("");
   openSheet(`<h2>変動費(合計)の編集</h2>
-    <div class="desc">この月は移行データ(合計のみ)です。分類ごとの合計を直接編集できます。</div>
+    <div class="desc">この月は移行データ(合計のみ)です。分類ごとの合計を直接編集できます(空欄は 0)。</div>
     ${rows}<button class="sheetbtn" id="vt-save">保存</button>`);
   document.getElementById("vt-save").addEventListener("click",()=>{
+    if(_writeBlocked()) return;
+    let bad=false; const vals=[];
+    document.querySelectorAll('[data-ct]').forEach(inp=>{ const r=_readAmt(inp,{allowEmpty:true}); if(!r.ok) bad=true; else vals.push({c:inp.dataset.ct, v:r.v||0}); });
+    if(bad){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     const mo=db.months[k0];                          // 保存の瞬間に取り直す
     mo.categoryTotals=mo.categoryTotals||{};
-    document.querySelectorAll('[data-ct]').forEach(inp=>{ mo.categoryTotals[inp.dataset.ct]=evalExpr(inp.value)||0; });
+    vals.forEach(x=>{ mo.categoryTotals[x.c]=x.v; });
     save(); closeSheet(); render();
+    toast(labelOf(k0)+" の変動費(合計)を保存しました ✓");
   });
 }
+
+/* ============================================================
+   変動費の分類 + 分類の統合 (REV-20260901-02)
+   - 「過去に使った分類」は常に見える(タップで今月に追加 = 同じ文字列の再利用)
+   - 「統合」: 選ぶ → 最終的な名前 → 影響範囲(両方ある月は赤く)→ 確認語を打つ → 実行
+     全月の categories / categoryTotals / entries を書き換える。金額は動かない。
+   ============================================================ */
+function _catPresent(k,c){ const m=db.months[k]; if(!m) return false;
+  return (m.categories||[]).indexOf(c)>=0 || (m.entries||[]).some(e=>e.category===c) || !!(m.categoryTotals && m.categoryTotals[c]!=null); }
+function _catUsage(c){ let months=0, cnt=0, last="";
+  monthsAsc().forEach(k=>{ if(_catPresent(k,c)){ months++; last=k; cnt+=(db.months[k].entries||[]).filter(e=>e.category===c).length; } });
+  return {months,cnt,last}; }
+function _allCats(){ return Array.from(new Set(monthsAsc().flatMap(m=>db.months[m].categories||[]).concat(monthsAsc().flatMap(m=>(db.months[m].entries||[]).map(e=>e.category))))).filter(Boolean); }
+
 function editVarCats(reassignCat){
+  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0];
   const defaults=db.settings.defaultCategories||[];
   const cnt=cat=>(mo.entries||[]).filter(e=>e.category===cat).length;
   let rows=mo.categories.map(cat=>{
-    if(defaults.includes(cat)) return `<div class="frow" style="align-items:center;margin-bottom:13px"><span style="flex:1;font-size:14.5px;color:var(--ink)">${cat}</span></div>`;
+    if(defaults.includes(cat)) return `<div class="frow" style="align-items:center;margin-bottom:13px"><span style="flex:1;font-size:14.5px;color:var(--ink)">${esc(cat)}</span><span class="vc-fixed">固定</span></div>`;
     if(reassignCat===cat){
-      const opts=mo.categories.filter(c=>c!==cat).map(c=>`<option value="${c}">${c}</option>`).join("");
-      return `<div class="frow" style="flex-wrap:wrap;gap:8px;background:var(--clay-soft);padding:10px;border-radius:12px"><div class="field" style="flex:1 1 100%"><label>「${cat}」の記録(${cnt(cat)}件)を移動 →</label><select class="finput" id="vc-target">${opts}</select></div><button class="sheetbtn danger" id="vc-domove" style="flex:1;margin:0">移動して削除</button><button class="addrow" id="vc-cancel" style="flex:0 0 auto;margin:0;width:auto;padding:0 14px">キャンセル</button></div>`;
+      const opts=mo.categories.filter(c=>c!==cat).map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+      return `<div class="frow" style="flex-wrap:wrap;gap:8px;background:var(--clay-soft);padding:10px;border-radius:12px"><div class="field" style="flex:1 1 100%"><label>「${esc(cat)}」の記録(${cnt(cat)}件)を移動 →</label><select class="finput" id="vc-target">${opts}</select></div><button class="sheetbtn danger" id="vc-domove" style="flex:1;margin:0">移動して削除</button><button class="addrow" id="vc-cancel" style="flex:0 0 auto;margin:0;width:auto;padding:0 14px">キャンセル</button></div>`;
     }
-    return `<div class="frow" style="align-items:center;margin-bottom:13px"><span style="flex:1;font-size:14.5px;color:var(--ink)">${cat}</span><button class="del" data-rmcat="${cat}">×</button></div>`;
+    return `<div class="frow" style="align-items:center;margin-bottom:13px"><span style="flex:1;font-size:14.5px;color:var(--ink)">${esc(cat)}</span><button class="del" data-rmcat="${esc(cat)}">×</button></div>`;
   }).join("");
-  /* 過去に使った分類(今月に無いもの)をワンタップで復用できる候補。
-     手打ちだと「お見舞い/おみまい」のような表記ゆれが生まれ、過去との比較が切れる。
+  /* 過去に使った分類(今月に無いもの)をワンタップで復用できる候補 — 常時表示。
      候補タップ = 同じ文字列の再利用なので、表記が必ず一致し比較が自動で繋がる。 */
-  const pastCats=Array.from(new Set(monthsAsc().flatMap(m=>db.months[m].categories||[]))).filter(c=>!mo.categories.includes(c));
-  const pastHtml=pastCats.length?`<div class="vc-past" id="vc-past" style="display:none"><div class="vc-past-h">過去に使った分類(タップで追加・表記ゆれ防止)</div><div class="chips">${pastCats.map(c=>`<button class="chip" data-past="${c}">${c}</button>`).join("")}</div></div>`:"";
+  const all=_allCats();
+  const pastCats=all.filter(c=>!mo.categories.includes(c));
+  const mergeable=all.filter(c=>!defaults.includes(c));
+  const pastHtml=pastCats.length
+    ? `<div class="chips">${pastCats.map(c=>`<button class="chip" data-past="${esc(c)}">${esc(c)}</button>`).join("")}</div>`
+    : `<div class="vc-empty">まだありません</div>`;
   openSheet(`<h2>変動費の分類</h2>
     <div class="desc">この月の大分類です。元の5つは固定。新しい分類を追加・削除できます。合計は記帳から自動集計され、翌月は5つに戻ります。</div>
-    ${rows}
-    <button class="addrow" id="vc-add">+ 変動費の分類を追加</button>
-    ${pastHtml}
-    <input class="finput" id="vc-newcat" placeholder="新しい分類名" style="display:none;margin-top:8px">
+    <div class="vc-sec"><div class="vc-h">この月の分類</div>${rows}</div>
+    <div class="vc-sec"><div class="vc-h">過去に使った分類 <small>タップで今月に追加・表記ゆれ防止</small></div>${pastHtml}
+      ${mergeable.length?'<button class="addrow" id="vc-merge">分類を統合する（表記ゆれをまとめる）</button>':''}</div>
+    <div class="vc-sec"><div class="vc-h">新しい分類</div>
+      <div class="frow" style="align-items:center"><input class="finput" id="vc-newcat" placeholder="新しい分類名" autocomplete="off"><button class="chip" id="vc-addnew" style="flex:0 0 auto">追加</button></div></div>
     <button class="sheetbtn" id="vc-done" style="margin-top:14px">完了</button>`);
   const newcat=document.getElementById("vc-newcat");
-  document.getElementById("vc-add").addEventListener("click",()=>{ const pp=document.getElementById("vc-past"); if(pp) pp.style.display="block"; newcat.style.display="block"; newcat.focus(); });
-  document.querySelectorAll('[data-past]').forEach(b=>b.addEventListener("click",()=>{ const mo=db.months[k0]; const c=b.dataset.past; if(!mo.categories.includes(c)){ mo.categories.push(c); save(); } editVarCats(); }));
+  document.querySelectorAll('[data-past]').forEach(b=>b.addEventListener("click",()=>{ const mo=db.months[k0]; const c=b.dataset.past; if(!mo.categories.includes(c)){ mo.categories.push(c); save(); toast("「"+c+"」を"+labelOf(k0)+"に追加しました ✓"); } editVarCats(); }));
   /* 入力欄に残っている分類名を確定する(再描画はしない)。
-     「完了」ボタンやシートを下に閉じた時に、打ち込んだ名前が消えるのを防ぐ。 */
-  const flushNewCat=()=>{ const mo=db.months[k0]; const n=newcat.value.trim(); newcat.value=""; if(n && !mo.categories.includes(n)){ mo.categories.push(n); save(); return true; } return false; };
+     「完了」ボタンやページを閉じた時に、打ち込んだ名前が消えるのを防ぐ。 */
+  const flushNewCat=()=>{ const mo=db.months[k0]; const n=newcat.value.trim(); newcat.value=""; if(n && !mo.categories.includes(n)){ mo.categories.push(n); save(); toast("「"+n+"」を追加しました ✓"); return true; } return false; };
   const commitAdd=()=>{ flushNewCat(); editVarCats(); };
-  newcat.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); commitAdd(); } else if(e.key==="Escape"){ newcat.style.display="none"; newcat.value=""; } });
-  document.querySelectorAll('[data-rmcat]').forEach(b=>b.addEventListener("click",()=>{ const mo=db.months[k0]; const cat=b.dataset.rmcat; if(cnt(cat)>0){ editVarCats(cat); } else { mo.categories=mo.categories.filter(c=>c!==cat); save(); editVarCats(); } }));
-  document.getElementById("vc-domove")?.addEventListener("click",()=>{ const mo=db.months[k0]; const t=document.getElementById("vc-target").value; (mo.entries||[]).forEach(e=>{ if(e.category===reassignCat) e.category=t; }); mo.categories=mo.categories.filter(c=>c!==reassignCat); save(); editVarCats(); });
+  document.getElementById("vc-addnew").addEventListener("click",commitAdd);
+  newcat.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); commitAdd(); } else if(e.key==="Escape"){ newcat.value=""; } });
+  document.querySelectorAll('[data-rmcat]').forEach(b=>b.addEventListener("click",()=>{ const mo=db.months[k0]; const cat=b.dataset.rmcat; if(cnt(cat)>0){ editVarCats(cat); } else { mo.categories=mo.categories.filter(c=>c!==cat); save(); toast("「"+cat+"」を外しました"); editVarCats(); } }));
+  document.getElementById("vc-domove")?.addEventListener("click",()=>{ const mo=db.months[k0]; const t=document.getElementById("vc-target").value; let n=0; (mo.entries||[]).forEach(e=>{ if(e.category===reassignCat){ e.category=t; n++; } }); mo.categories=mo.categories.filter(c=>c!==reassignCat); save(); toast(n+"件を「"+t+"」へ移動し「"+reassignCat+"」を外しました ✓"); editVarCats(); });
   document.getElementById("vc-cancel")?.addEventListener("click",()=>editVarCats());
+  document.getElementById("vc-merge")?.addEventListener("click",()=>{ flushNewCat(); _mergeCatsStep1(k0, []); });
   document.getElementById("vc-done").addEventListener("click",()=>{ closeSheet(); });
   _onSheetClose=()=>{ flushNewCat(); render(); };
 }
+/* 統合 1/3: 選ぶ */
+function _mergeCatsStep1(k0, pre){
+  const defaults=db.settings.defaultCategories||[];
+  const mergeable=_allCats().filter(c=>!defaults.includes(c));
+  const sel=new Set(pre||[]);
+  const chips=mergeable.map(c=>{ const u=_catUsage(c); return `<button class="chip sel ${sel.has(c)?'on':''}" data-msel="${esc(c)}">${esc(c)}<small>${u.months}ヶ月</small></button>`; }).join("");
+  openSheet(`<h2>分類の統合 <small>1/3</small></h2>
+    <div class="desc">まとめたい分類を選んでください（元の5つは選べません）。例: 「お見舞い」と「おみまい」、「衣類」と「衣料品」。</div>
+    <div class="chips" id="mg-chips">${chips}</div>
+    <button class="sheetbtn" id="mg-next" ${sel.size?'':'disabled'}>次へ（${sel.size}件を選択中）</button>
+    <button class="sheetbtn ghost" id="mg-cancel">分類の一覧へ戻る</button>`);
+  const nb=document.getElementById("mg-next");
+  document.getElementById("mg-chips").addEventListener("click",e=>{ const b=e.target.closest("[data-msel]"); if(!b) return; const c=b.dataset.msel; if(sel.has(c)) sel.delete(c); else sel.add(c); b.classList.toggle("on",sel.has(c)); nb.disabled=!sel.size; nb.textContent=`次へ（${sel.size}件を選択中）`; });
+  nb.addEventListener("click",()=>{ if(!sel.size) return; _mergeCatsStep2(k0, Array.from(sel)); });
+  document.getElementById("mg-cancel").addEventListener("click",()=>editVarCats());
+  _onSheetClose=()=>{ render(); };
+}
+/* 統合 2/3: 最終的な名前 */
+function _mergeCatsStep2(k0, sel){
+  const byLast=sel.slice().sort((a,b)=>_catUsage(b).last.localeCompare(_catUsage(a).last));
+  const def=byLast[0]||"";
+  openSheet(`<h2>分類の統合 <small>2/3</small></h2>
+    <div class="desc">選んだ ${sel.length} 件をひとつの名前にまとめます。下の候補をタップするか、新しい名前を入力してください。</div>
+    <div class="field"><label>最終的な名前</label><input class="finput" id="mg-name" value="${esc(def)}" autocomplete="off"></div>
+    <div class="chips">${sel.map(c=>`<button class="chip" data-mgpick="${esc(c)}">${esc(c)}</button>`).join("")}</div>
+    <button class="sheetbtn" id="mg-next2">影響を確認する</button>
+    <button class="sheetbtn ghost" id="mg-back">戻る</button>`);
+  const inp=document.getElementById("mg-name");
+  document.querySelectorAll("[data-mgpick]").forEach(b=>b.addEventListener("click",()=>{ inp.value=b.dataset.mgpick; _clearBad(inp); }));
+  document.getElementById("mg-next2").addEventListener("click",()=>{ const t=inp.value.trim(); if(!t){ _markBad(inp,"名前を入力してください ✏️"); return; } _mergeCatsStep3(k0, sel, t); });
+  document.getElementById("mg-back").addEventListener("click",()=>_mergeCatsStep1(k0, sel));
+  _onSheetClose=()=>{ render(); };
+}
+function _mergePlan(sel, target){
+  const sources=sel.filter(c=>c!==target);
+  const months=[]; let ents=0;
+  monthsAsc().forEach(k=>{
+    const present=sources.filter(c=>_catPresent(k,c)); if(!present.length) return;
+    const hasTarget=_catPresent(k,target);
+    const n=(db.months[k].entries||[]).filter(e=>present.indexOf(e.category)>=0).length;
+    months.push({k, sources:present, n, both: present.length>=2 || hasTarget}); ents+=n;
+  });
+  return {sources, months, ents};
+}
+/* 統合 3/3: 影響の確認 + 確認語 */
+function _mergeCatsStep3(k0, sel, target){
+  const plan=_mergePlan(sel, target);
+  const list=plan.months.length
+    ? plan.months.map(m=>`<div class="mg-row ${m.both?'both':''}"><span class="mg-m">${labelOf(m.k)}</span><span class="mg-d">${m.sources.map(esc).join("・")} → ${esc(target)}${m.n?`<small>${m.n}件</small>`:''}${m.both?'<b>両方あるため合算されます</b>':''}</span></div>`).join("")
+    : `<div class="vc-empty">変更される月はありません（すでに「${esc(target)}」だけです）</div>`;
+  openSheet(`<h2>分類の統合 <small>3/3</small></h2>
+    <div class="mg-sum">${plan.months.length} ヶ月・${plan.ents} 件の記録を「${esc(target)}」に統合します</div>
+    <div class="mg-list">${list}</div>
+    <div class="desc" style="margin-top:12px">金額は変わりません（余額もそのまま）。<b>取り消しはできません。</b>実行前にバックアップ（右上 ↓）をおすすめします。</div>
+    <div class="field"><label>確認のため「我已确定无误」と入力してください</label><input class="finput" id="mg-confirm" autocomplete="off" placeholder="我已确定无误"></div>
+    <button class="sheetbtn" id="mg-run" disabled>統合する</button>
+    <button class="sheetbtn ghost" id="mg-back">戻る</button>`);
+  const conf=document.getElementById("mg-confirm"), run=document.getElementById("mg-run");
+  conf.addEventListener("input",()=>{ run.disabled = conf.value.trim()!=="我已确定无误" || !plan.months.length; });
+  run.addEventListener("click",()=>{
+    if(_writeBlocked()) return;
+    if(conf.value.trim()!=="我已确定无误"){ _markBad(conf,"「我已确定无误」と入力してください ✏️"); return; }
+    const r=_applyMerge(sel, target);
+    save();
+    toast(`「${target}」に統合しました（${r.months}ヶ月・${r.ents}件）✓`);
+    editVarCats();
+  });
+  document.getElementById("mg-back").addEventListener("click",()=>_mergeCatsStep2(k0, sel));
+  _onSheetClose=()=>{ render(); };
+}
+function _applyMerge(sel, target){
+  const sources=sel.filter(c=>c!==target); let months=0, ents=0;
+  monthsAsc().forEach(k=>{
+    const m=db.months[k]; let touched=false;
+    (m.entries||[]).forEach(e=>{ if(sources.indexOf(e.category)>=0){ e.category=target; ents++; touched=true; } });
+    if(m.categoryTotals){ sources.forEach(s=>{ if(m.categoryTotals[s]!=null){ m.categoryTotals[target]=(m.categoryTotals[target]||0)+(m.categoryTotals[s]||0); delete m.categoryTotals[s]; touched=true; } }); }
+    if(m.categories && m.categories.some(c=>sources.indexOf(c)>=0)){
+      const out=[]; m.categories.forEach(c=>{ const n=sources.indexOf(c)>=0?target:c; if(out.indexOf(n)<0) out.push(n); }); m.categories=out; touched=true;
+    }
+    if(touched) months++;
+  });
+  return {months, ents};
+}
+
+/* 記録の追加・編集 (BUG-20260901-02/-03/-08) */
+let _lastAddedId=null;
+function _highlightEntry(id){
+  if(!id) return;
+  setTimeout(()=>{ const el=document.querySelector('[data-eid="'+id+'"]'); if(!el) return;
+    const day=el.closest(".day")||el; day.classList.add("flash");
+    if(day.scrollIntoView) try{ day.scrollIntoView({block:"center",behavior:"smooth"}); }catch(e){}
+    setTimeout(()=>day.classList.remove("flash"), 1600); }, 40);
+}
+function _md(date){ const p=String(date||"").split("-"); return p.length===3 ? (Number(p[1])+"/"+Number(p[2])) : date; }
 function editEntry(id){
+  if(_writeBlocked()) return;
   const k0=active;
   const mo=db.months[k0]; const e=id?mo.entries.find(x=>x.id===id):null;
   const cats=mo.categories;
   const [ey,em]=active.split("-").map(Number); const eMin=active+"-01", eMax=active+"-"+String(new Date(ey,em,0).getDate()).padStart(2,"0");
-  const eDefault=e?e.date:(isCurrentRealMonth(active)?active+"-"+String(new Date().getDate()).padStart(2,"0"):eMin);
-  let chips=cats.map(c=>`<button class="chip ${e&&e.category===c?'on':(!e&&c===cats[0]?'on':'')}" data-c="${c}">${c}</button>`).join("");
-  openSheet(`<h2>${e?"記録を編集":"記録を追加"}</h2>
-    <div class="field"><label>日付</label><input class="finput" id="e-date" type="date" value="${eDefault}" min="${eMin}" max="${eMax}"></div>
+  const cur=(k0===_nowYM());
+  const eDefault=e?e.date:(cur?active+"-"+String(new Date().getDate()).padStart(2,"0"):"");
+  let chips=cats.map(c=>`<button class="chip ${e&&e.category===c?'on':(!e&&c===cats[0]?'on':'')}" data-c="${esc(c)}">${esc(c)}</button>`).join("");
+  openSheet(`<h2>${e?"記録を編集":"記録を追加"} <small>${labelOf(k0)}</small></h2>
+    ${!cur?`<div class="entrybar"><span>${labelOf(k0)} の記録です<small>（今日は ${_md(_nowYM()+"-"+String(new Date().getDate()).padStart(2,"0"))}）</small></span></div>`:''}
+    <div class="field"><label>日付${!cur?' <span class="hint">必ず選んでください</span>':''}</label><input class="finput" id="e-date" type="date" value="${eDefault}" min="${eMin}" max="${eMax}"></div>
     <div class="field"><label>分類</label><div class="chips" id="e-chips">${chips}</div></div>
     <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="e-amt" placeholder="0" value="${e?e.amount:''}"></div>
       <div class="cash-toggle ${e&&e.cash?'on':''}" id="e-cash"><div class="switch"></div>現金</div></div>
@@ -349,45 +727,75 @@ function editEntry(id){
   document.getElementById("e-chips").addEventListener("click",ev=>{ const c=ev.target.closest(".chip"); if(!c) return; document.querySelectorAll("#e-chips .chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); cat=c.dataset.c; });
   document.getElementById("e-cash").addEventListener("click",function(){ this.classList.toggle("on"); isCash=this.classList.contains("on"); });
   document.getElementById("e-save").addEventListener("click",()=>{
-    const amt=evalExpr(document.getElementById("e-amt").value); if(!amt){ return; }
-    const date=document.getElementById("e-date").value||k0+"-01";
+    if(_writeBlocked()) return;
+    const ra=_readAmt("e-amt",{allowEmpty:false,allowZero:false,allowNegative:false});
+    const di=document.getElementById("e-date"); const date=di.value;
+    let bad=!ra.ok;
+    if(!date){ _markBad(di,"日付を選んでください ✏️"); bad=true; }
+    else if(date<eMin||date>eMax){ _markBad(di,labelOf(k0)+" の日付を選んでください ✏️"); bad=true; }
+    if(bad){ _focusFirstBad(); return; }
+    const amt=ra.v;
     const m=db.months[k0]; m.entries=m.entries||[];             // 保存の瞬間に取り直す
     const le=id?m.entries.find(x=>x.id===id):null;
-    if(id&&!le){ closeSheet(); render(); return; }              // 対象が消えていたら何もしない
+    if(id&&!le){ closeSheet(); render(); toast("この記録はすでに削除されています","warn"); return; }
+    let nid=id;
     if(le){ le.category=cat; le.amount=amt; le.cash=isCash?amt:0; le.date=date; }
-    else{ m.entries.push({id:"e"+Date.now(),date:date,category:cat,amount:amt,cash:isCash?amt:0}); }
+    else{ nid="e"+Date.now(); m.entries.push({id:nid,date:date,category:cat,amount:amt,cash:isCash?amt:0}); }
     save(); closeSheet(); render();
+    toast(_md(date)+" · "+cat+" "+fmt(amt)+(isCash?"（現金）":"")+" を"+(le?"更新":"追加")+"しました ✓");
+    _highlightEntry(nid);
   });
-  if(e){ document.getElementById("e-del").addEventListener("click",()=>{ const m=db.months[k0]; m.entries=(m.entries||[]).filter(x=>x.id!==id); save(); closeSheet(); render(); }); }
+  if(e){ document.getElementById("e-del").addEventListener("click",async ()=>{
+    if(_writeBlocked()) return;
+    const ok=await _confirmDialog(_md(e.date)+" · "+esc(e.category)+" "+fmt(e.amount)+" を削除しますか？","削除する","やめる",true);
+    if(!ok) return;
+    const m=db.months[k0]; m.entries=(m.entries||[]).filter(x=>x.id!==id); save(); closeSheet(); render();
+    toast(_md(e.date)+" · "+e.category+" "+fmt(e.amount)+" を削除しました");
+  }); }
 }
 
 /* ============================================================
    精算 — フルページ + 単一下書き
    - 下書きは記帳データ(data.json)に入れない。打っている間はこの端末の
      localStorage に自動保存し、戻る時に非公開リポジトリの draft.json へ
-     1 回だけアップロード(1 枠のみ・savedAt が新しい方が勝ち)。
+     1 回だけアップロード(1 枠のみ)。
    - 月オブジェクトの参照は保持しない。書き込みの瞬間に毎回 M() で取得
      (同期で db が丸ごと入れ替わっても、生きている月に書く)。
    - ページを開いている間、自動同期(pull)は一時停止(sync.js が _hesanOpen を見る)。
+   [2026-09-01] 
+   - 開けるのは今月と来月だけ(過去月の繰越金を誤って書き換えない) (BUG-06)
+   - 閉じる前にリモートの下書きを確認し、相手が更新していれば選ばせる (BUG-12)
+   - 「設定」の前に相手が先に確定していないか確認 / 設定後は下書きを消す (BUG-13)
+   - 下書きの月が違えば「設定」を止め、移動か削除を選ばせる (BUG-14)
    ============================================================ */
 let _hesanOpen=false;
-const DRAFT_LS="we_kakeibo_draft_v1";
+const DRAFT_LS="we_kakeibo_draft_v1", DRAFT_PENDING_LS="we_kakeibo_draft_pending";
 function _draftLocalGet(){ try{ const s=localStorage.getItem(DRAFT_LS); return s?JSON.parse(s):null; }catch(e){ return null; } }
 function _draftLocalSet(d){ try{ if(d) localStorage.setItem(DRAFT_LS, JSON.stringify(d)); else localStorage.removeItem(DRAFT_LS); }catch(e){} }
+function _draftPendingGet(){ try{ return localStorage.getItem(DRAFT_PENDING_LS)==="1"; }catch(e){ return false; } }
+function _draftPendingSet(v){ try{ if(v) localStorage.setItem(DRAFT_PENDING_LS,"1"); else localStorage.removeItem(DRAFT_PENDING_LS); }catch(e){} }
 function _hesanDefaultRows(){ const P=db.settings.people;
   return [ {label:P[0]+" pay",expr:""},{label:P[0]+" 現金",expr:""},{label:P[1]+" 現金",expr:""},{label:P[1]+" pay",expr:""},{label:P[1]+" カード",expr:""} ]; }
-/* 全角数字・カンマ・¥・空白を受け付けてから evalExpr へ(compute.js は不変のまま) */
+/* 全角数字・カンマ・¥・空白を受け付けてから evalExpr へ(精算は式の欄なので寛容のまま) */
 function _hesanNum(s){ if(s==null) return null;
   s=String(s).replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/[，,¥￥\s]/g,"");
   return evalExpr(s); }
+function _hm(ts){ const d=new Date(ts||0); return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
 
-function openHesan(){
+function openHesan(force){
   if(_hesanOpen) return;
-  _hesanOpen=true;
+  if(_writeBlocked()) return;
   const key=active;
+  if(force!==true && !_isCarryMonth(key)){
+    openDialog('<h2>過去の月は精算できません</h2><div class="desc">精算は今月と来月の繰越金を決めるためのものです。'+labelOf(key)+' の繰越金を直したい時は「入金 / 繰越金の編集」から変更できます。</div>'
+      +'<button class="sheetbtn" id="hp-goinc">入金 / 繰越金の編集を開く</button><button class="sheetbtn ghost" id="hp-close">閉じる</button>');
+    document.getElementById("hp-goinc").addEventListener("click",()=>{ closeDialog(true); editIncome(); });
+    document.getElementById("hp-close").addEventListener("click",()=>closeDialog());
+    return;
+  }
+  _hesanOpen=true;
   const M=()=>db.months[key];
   const P=db.settings.people;
-  const esc=v=>String(v==null?"":v).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
 
   let d=_draftLocalGet();
   let rows=(d&&d.rows&&d.rows.length)?JSON.parse(JSON.stringify(d.rows)):_hesanDefaultRows();
@@ -395,7 +803,10 @@ function openHesan(){
   let initExpr=(d&&d.initAmount!=null)?String(d.initAmount):"";
   let draftMonth=d?d.month:null;
   let lastSavedAt=d?(d.savedAt||0):0;
-  let typed=false, dirty=false, saveTimer=null;
+  let baseSavedAt=lastSavedAt;                       // 開いた時点で採用していた下書きの時刻(衝突判定の基準)
+  let pendingFlag=_draftPendingGet();                // 前回オフラインで送れなかった下書きが残っている
+  let typed=false, dirty=false, saveTimer=null, closing=false;
+  const cashNote=_cashUnusedSince();
 
   const page=document.createElement("div");
   page.className="hesanpage";
@@ -406,6 +817,25 @@ function openHesan(){
   function flushLocal(){ clearTimeout(saveTimer); saveTimer=null; if(!dirty) return; dirty=false;
     const o=isEmptyDraft()?null:draftObj(); _draftLocalSet(o); if(o) lastSavedAt=o.savedAt; }
   function touch(){ typed=true; dirty=true; draftMonth=key; clearTimeout(saveTimer); saveTimer=setTimeout(flushLocal,800); }
+  function adopt(rd){                                // リモートの下書きをこの端末に取り込む
+    if(!rd || rd.month==null || !rd.rows || !rd.rows.length){
+      rows=_hesanDefaultRows(); yzExpr=""; initExpr=""; draftMonth=null; _draftLocalSet(null);
+      lastSavedAt=(rd&&rd.savedAt)||Date.now();
+    } else {
+      rows=JSON.parse(JSON.stringify(rd.rows));
+      yzExpr=rd.yeonZan!=null?String(rd.yeonZan):"";
+      initExpr=rd.initAmount!=null?String(rd.initAmount):"";
+      draftMonth=rd.month; lastSavedAt=rd.savedAt||0;
+      _draftLocalSet({month:draftMonth,rows:rows,yeonZan:yzExpr,initAmount:initExpr,savedAt:lastSavedAt});
+    }
+    baseSavedAt=lastSavedAt; typed=false; dirty=false; _draftPendingSet(false);
+  }
+  function showConflict(rd){                          // 相手が更新: 読み込むか無視するかを本人に
+    const box=document.getElementById("hp-conflict"); if(!box) return;
+    box.innerHTML=`<div class="hp-conflict"><span>相手が下書きを更新しました（${_hm(rd.savedAt)}）</span><div class="frow" style="gap:8px;margin-top:8px"><button class="chip on" id="hpc-load">読み込む</button><button class="chip" id="hpc-ignore">無視して続ける</button></div></div>`;
+    document.getElementById("hpc-load").addEventListener("click",()=>{ adopt(rd); build(); });
+    document.getElementById("hpc-ignore").addEventListener("click",()=>{ box.innerHTML=""; });
+  }
 
   function carry(){ const m=M(); return (m&&m.start!=null)?m.start:0; }
   function rowRight(expr){ const v=_hesanNum(expr); if(v==null) return '未入力'; return /[+\-*/]/.test(String(expr)) ? fmtN(v) : ''; }
@@ -414,7 +844,7 @@ function openHesan(){
   function initSuggest(total){ const yz=_hesanNum(yzExpr); return yz==null?null:Math.round(total-yz); }
   function diffHtml(total){
     const yz=_hesanNum(yzExpr);
-    const theoryLine=`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span style="color:var(--ink-2)">理論上の残高 <small style="font-weight:400;color:var(--ink-3)">(${P[1]}残高 ＋ 繰越金)</small></span><span class="num" style="color:var(--ink-2)">${yz!=null?fmt(yz+carry()):'—'}</span></div>`;
+    const theoryLine=`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span style="color:var(--ink-2)">理論上の残高 <small style="font-weight:400;color:var(--ink-3)">(${esc(P[1])}残高 ＋ 繰越金)</small></span><span class="num" style="color:var(--ink-2)">${yz!=null?fmt(yz+carry()):'—'}</span></div>`;
     if(yz==null) return theoryLine+`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span style="color:var(--ink-3)">差額(実際 − 理論)</span><span style="color:var(--ink-3)">—</span></div>`;
     const dd=Math.round(total-(yz+carry())); const col=dd>0?'var(--sage)':(dd<0?'var(--clay)':'var(--ink)'); const sign=dd>0?'+':(dd<0?'−':'±'); const word=dd>0?'多い・余り':(dd<0?'少ない・不足':'一致');
     return theoryLine+`<div class="htotal" style="border-top:1px dashed var(--hair);margin-top:0"><span>差額(実際 − 理論)</span><span style="color:${col}">${sign}¥${Math.abs(dd).toLocaleString("ja-JP")} <small style="font-weight:400;color:var(--ink-2)">${word}</small></span></div>`;
@@ -422,6 +852,7 @@ function openHesan(){
   function initHint(total){ const sg=initSuggest(total); return sg!=null ? ('空欄なら自動 '+fmt(sg)) : ('※ '+P[1]+'残高を入れると自動計算'); }
   function initPh(total){ const sg=initSuggest(total); return sg!=null ? fmtN(sg) : ''; }
   function msg(t){ const m=document.getElementById("hp-msg"); if(m) m.textContent=t||""; }
+  function mismatch(){ return !!(draftMonth && draftMonth!==key); }
   function refresh(){ const t=calcTotal();
     const te=document.getElementById("he-total"); if(te) te.textContent=fmt(t);
     const dbx=document.getElementById("he-diffbox"); if(dbx) dbx.innerHTML=diffHtml(t);
@@ -429,40 +860,53 @@ function openHesan(){
     const ie=document.getElementById("he-init"); if(ie) ie.placeholder=initPh(t); }
 
   function build(){
-    const t=calcTotal();
+    const t=calcTotal(); const mm=mismatch(); const m=M();
     page.innerHTML=`
     <div class="hp-top">
       <button class="iconbtn" id="hp-back" aria-label="概要へ戻る"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
-      <div class="hp-title">精算 <small>${labelOf(key)}</small></div>
+      <div class="hp-title">精算 <small>${labelOf(key)}${(m&&!m.startConfirmed)?' · 繰越 仮':(m&&m.startConfirmed?' · 確定済':'')}</small></div>
       <button class="hp-del" id="hp-deldraft">下書きを削除</button>
     </div>
     <div class="hp-scroll">
       <div class="desc">手元のお金を計算して、今月の<b>初期金額</b>(繰越金)を出します。記帳データとは連動しません。各欄は <b>5349+890</b> のように式で書けます。下書きは自動保存されます。</div>
-      ${draftMonth && draftMonth!==key ? `<div class="hp-mismatch">この下書きは ${labelOf(draftMonth)} のものです</div>` : ``}
+      ${cashNote?`<div class="hp-cashnote">${labelOf(cashNote)}から現金の使用なし（現金残 ${fmt(cashRemain(monthsAsc().slice(-1)[0]))}）</div>`:``}
+      ${mm ? `<div class="hp-mismatch">この下書きは ${labelOf(draftMonth)} のものです。このまま${labelOf(key)}の繰越金には設定できません。<div class="frow" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="chip on" id="hp-gomonth">${labelOf(draftMonth)}へ移動して設定</button><button class="chip" id="hp-dropdraft">下書きを削除して${labelOf(key)}を始める</button></div></div>` : ``}
+      <div id="hp-conflict"></div>
       <div id="he-rows">${rows.map(rowHtml).join("")}</div>
       <button class="addrow" id="he-add">+ 行を追加</button>
       <div class="htotal"><span>実際に残ったお金</span><span class="num" id="he-total">${fmt(t)}</span></div>
-      <div class="htotal" style="border-top:1px dashed var(--hair)"><span style="color:var(--ink-2)">今月の繰越金 <small style="font-weight:400;color:var(--ink-3)">前月繰越・自動</small></span><span class="num" style="color:var(--ink-2)">${fmt(carry())}</span></div>
-      <div class="field" style="margin:10px 0 2px"><label>${P[1]}残高 <span class="hint">手入力</span></label><input class="finput num" id="he-yeon" inputmode="numeric" value="${esc(yzExpr)}" placeholder="理論上 残るはずの金額"></div>
+      <div class="htotal" style="border-top:1px dashed var(--hair)"><span style="color:var(--ink-2)">今月の繰越金 <small style="font-weight:400;color:var(--ink-3)">${(m&&!m.startConfirmed)?'仮・前月残高に自動追従':'確定済'}</small></span><span class="num" style="color:var(--ink-2)">${fmt(carry())}</span></div>
+      <div class="field" style="margin:10px 0 2px"><label>${esc(P[1])}残高 <span class="hint">手入力</span></label><input class="finput num" id="he-yeon" inputmode="numeric" value="${esc(yzExpr)}" placeholder="理論上 残るはずの金額"></div>
       <div id="he-diffbox">${diffHtml(t)}</div>
       <div class="field" style="margin:10px 0 2px"><label>初期金額（今月の繰越金 ＋ 差額） <span class="hint" id="he-init-hint">${initHint(t)}</span></label><input class="finput num" id="he-init" inputmode="numeric" value="${esc(initExpr)}" placeholder="${initPh(t)}"></div>
       <div style="height:8px"></div>
     </div>
     <div class="hp-foot">
-      <button class="sheetbtn" id="he-setinit" style="margin-top:0">初期金額（今月の繰越金 ＋ 差額）を設定</button>
+      <button class="sheetbtn" id="he-setinit" style="margin-top:0" ${mm?'disabled':''}>初期金額（今月の繰越金 ＋ 差額）を設定</button>
       <div class="hp-note">精算を開いている間、自動同期は一時停止します（戻ると再開）</div>
       <div class="hp-msg" id="hp-msg"></div>
     </div>`;
     bind();
   }
+  function dropDraft(){
+    rows=_hesanDefaultRows(); yzExpr=""; initExpr=""; draftMonth=null;
+    typed=false; dirty=false; clearTimeout(saveTimer); saveTimer=null;
+    _draftLocalSet(null); _draftPendingSet(false); lastSavedAt=Date.now(); baseSavedAt=lastSavedAt;
+    if(window._draftSync) _draftSync.push(null);
+  }
   function bind(){
     document.getElementById("hp-back").addEventListener("click",()=>closeHesan());
-    document.getElementById("hp-deldraft").addEventListener("click",()=>{
-      rows=_hesanDefaultRows(); yzExpr=""; initExpr=""; draftMonth=null;
-      typed=false; dirty=false; clearTimeout(saveTimer); saveTimer=null;
-      _draftLocalSet(null); lastSavedAt=Date.now();
-      if(window._draftSync) _draftSync.push(null);
-      build(); msg("下書きを削除しました");
+    document.getElementById("hp-deldraft").addEventListener("click",async ()=>{
+      if(!isEmptyDraft()){ const ok=await _confirmDialog("この下書きを削除しますか？（相手の端末からも消えます）","削除する","やめる",true); if(!ok) return; }
+      dropDraft(); build(); msg("下書きを削除しました");
+    });
+    document.getElementById("hp-gomonth")?.addEventListener("click",()=>{
+      const t=draftMonth; if(!t || !db.months[t]){ msg(labelOf(t||"")+" のデータが見つかりません"); return; }
+      finalizeClose(false); active=t; render(); setTimeout(()=>openHesan(true), 60);
+    });
+    document.getElementById("hp-dropdraft")?.addEventListener("click",async ()=>{
+      const ok=await _confirmDialog(labelOf(draftMonth)+" の下書きを削除して "+labelOf(key)+" の精算を始めますか？","削除して始める","やめる",true); if(!ok) return;
+      dropDraft(); build(); msg("下書きを削除しました");
     });
     page.querySelectorAll('[data-he]').forEach(inp=>inp.addEventListener("input",()=>{ rows[+inp.dataset.he].expr=inp.value; const heEl=inp.parentNode.querySelector(".he"); if(heEl) heEl.textContent=rowRight(inp.value); touch(); refresh(); }));
     page.querySelectorAll('[data-hl]').forEach(inp=>inp.addEventListener("input",()=>{ rows[+inp.dataset.hl].label=inp.value; touch(); }));
@@ -470,70 +914,120 @@ function openHesan(){
     document.getElementById("he-add").addEventListener("click",()=>{ rows.push({label:"項目",expr:""}); touch(); build(); });
     document.getElementById("he-yeon").addEventListener("input",function(){ yzExpr=this.value; touch(); refresh(); });
     document.getElementById("he-init").addEventListener("input",function(){ initExpr=this.value; touch(); });
-    document.getElementById("he-setinit").addEventListener("click",()=>{
+    document.getElementById("he-setinit").addEventListener("click",async ()=>{
+      if(_writeBlocked()) return;
+      if(mismatch()){ msg("下書きの月が違います。上の選択肢から選んでください"); return; }
       const ie=document.getElementById("he-init");
       const v=(ie && ie.value.trim())?_hesanNum(ie.value):initSuggest(calcTotal());
       if(v==null){ msg(P[1]+"残高 か 初期金額 を入力してください（金額を計算できません）"); return; }
+      const val=Math.round(v);
+      /* 相手が先に確定していないか(4 秒で見切り・オフラインなら省略) */
+      if(window._peekRemote){
+        msg("相手の状態を確認中…");
+        const pk=await _peekRemote(4000); msg("");
+        const rm=pk.ok && pk.data && pk.data.months && pk.data.months[key];
+        if(rm && rm.startConfirmed && rm.start!==val){
+          const go=await _confirmDialog("相手がすでに "+labelOf(key)+" の繰越金を <b>"+fmt(rm.start)+"</b> に設定済みです。<br>"+fmt(val)+" で上書きしますか？","上書きする","やめる",true);
+          if(!go) return;
+        }
+      }
       const m=M();
       if(!m){ msg("この月のデータが見つかりません。戻ってやり直してください"); return; }
-      m.start=Math.round(v);
+      m.start=val; m.startConfirmed=true;
       save();
       const chk=M();                                 // 書いた直後に読み直して確認
-      if(chk && chk.start===Math.round(v)){ closeHesan(); render(); }
+      if(chk && chk.start===val && chk.startConfirmed){
+        /* 下書きの役目は終わり: 両端末から消す(翌月の「月違い」を防ぐ) */
+        typed=false; dirty=false; clearTimeout(saveTimer); saveTimer=null;
+        _draftLocalSet(null); _draftPendingSet(false);
+        if(window._draftSync) _draftSync.push(null);
+        finalizeClose(false); render();
+        toast(labelOf(key)+" の繰越金を "+fmt(val)+" に確定しました ✓");
+      }
       else { msg("反映できませんでした。もう一度お試しください"); }
     });
   }
-  function closeHesan(){
+  function currentDraftObj(){ return isEmptyDraft()?null:{month:key,rows:rows,yeonZan:yzExpr,initAmount:initExpr,savedAt:lastSavedAt||Date.now()}; }
+  function finalizeClose(pushObj){
     if(!_hesanOpen) return; _hesanOpen=false;
     flushLocal();
-    if(typed && window._draftSync){
-      const o=isEmptyDraft()?null:{month:key,rows:rows,yeonZan:yzExpr,initAmount:initExpr,savedAt:lastSavedAt||Date.now()};
-      _draftSync.push(o);
-    }
-    page.remove();
+    if(pushObj!==false && window._draftSync) _draftSync.push(pushObj);
+    document.removeEventListener("visibilitychange", onVis);
+    _detachKeyboardFit(page);
+    _pageOut(page, ()=>page.remove());
     if(window._syncResume) setTimeout(window._syncResume, 400);   // 閉じたら同期を再開して 1 回取り込む
   }
+  async function closeHesan(){
+    if(!_hesanOpen || closing) return;
+    flushLocal();
+    if(!typed || !window._draftSync){ finalizeClose(false); return; }
+    closing=true; msg("同期を確認中…");
+    const r=await _draftSync.pullQuick(4000);
+    closing=false; msg("");
+    if(!_hesanOpen) return;
+    if(!r.ok){ _draftPendingSet(true); finalizeClose(false); toast("オフラインのため、下書きは次に開いた時に同期します","warn"); return; }
+    const rd=r.draft, remoteAt=rd?(rd.savedAt||0):0;
+    const remoteDeleted=!!rd && (rd.month==null || !rd.rows || !rd.rows.length);
+    if(rd && remoteAt>baseSavedAt){
+      if(remoteDeleted){
+        const drop=await _confirmDialog("相手が下書きを削除しました（精算を設定済みの可能性があります）。<br>この端末の下書きを破棄しますか？","破棄する","残して上書きする",true);
+        if(drop){ _draftLocalSet(null); _draftPendingSet(false); typed=false; finalizeClose(false); return; }
+      } else {
+        const useRemote=await _confirmDialog("相手が "+_hm(remoteAt)+" に下書きを更新しています。どちらを残しますか？","相手の下書きを採用","自分の下書きで上書き");
+        if(useRemote){ adopt(rd); finalizeClose(false); return; }
+      }
+    }
+    _draftPendingSet(false); finalizeClose(currentDraftObj());
+  }
+  /* ページを開いたまま画面に戻ってきた時: 相手の更新を確認(打っていなければ静かに取り込む) */
+  function onVis(){
+    if(document.visibilityState!=="visible" || !_hesanOpen || !window._draftSync) return;
+    _draftSync.pullQuick(4000).then(r=>{
+      if(!r || !r.ok || !_hesanOpen) return;
+      const rd=r.draft; if(!rd || (rd.savedAt||0)<=lastSavedAt) return;
+      if(!typed && !pendingFlag){ adopt(rd); build(); } else showConflict(rd);
+    }).catch(()=>{});
+  }
+  document.addEventListener("visibilitychange", onVis);
   build();
-  /* リモート(draft.json)の下書きが新しければ取り込む(まだ打ち始めていない時だけ) */
+  _attachEdgeBack(page, ()=>closeHesan());
+  _attachKeyboardFit(page);
+  _pageIn(page);
+  /* リモート(draft.json)の下書きが新しければ取り込む(まだ打ち始めていない時だけ)。
+     前回オフラインで送れなかった下書きがあれば、黙って上書きせず本人に選ばせる。 */
   if(window._draftSync){
     _draftSync.pull().then(r=>{
       if(!r || !r.ok || !_hesanOpen || typed) return;
       const rd=r.draft;
-      if(!rd || (rd.savedAt||0) <= lastSavedAt) return;
-      if(rd.month==null || !rd.rows || !rd.rows.length){          // リモートは「削除済み」の印
-        rows=_hesanDefaultRows(); yzExpr=""; initExpr=""; draftMonth=null;
-        _draftLocalSet(null); lastSavedAt=rd.savedAt||Date.now(); build(); return;
-      }
-      rows=JSON.parse(JSON.stringify(rd.rows));
-      yzExpr=rd.yeonZan!=null?String(rd.yeonZan):"";
-      initExpr=rd.initAmount!=null?String(rd.initAmount):"";
-      draftMonth=rd.month; lastSavedAt=rd.savedAt||0;
-      _draftLocalSet({month:draftMonth,rows:rows,yeonZan:yzExpr,initAmount:initExpr,savedAt:lastSavedAt});
-      build();
+      if(!rd || (rd.savedAt||0) <= lastSavedAt){ if(!pendingFlag) return; }
+      if(pendingFlag){ typed=true; if(rd && (rd.savedAt||0)>lastSavedAt) showConflict(rd); return; }   // 未送信の下書きあり: 閉じる時に送る/選ばせる
+      adopt(rd); build();
     }).catch(()=>{});
   }
 }
 
-/* ---------------- settings / export (logic verbatim) ---------------- */
+/* ---------------- settings / export (logic verbatim + 入力検査) ---------------- */
 function openSettings(){
   const S=db.settings;
   openSheet(`<h2>設定</h2>
     <div class="desc">既定値(新しい月を作るときに使われます)。すべて変更できます。</div>
-    <div class="frow"><div class="field"><label>名前 1</label><input class="finput" id="s-p0" value="${S.people[0]}"></div>
-      <div class="field"><label>名前 2</label><input class="finput" id="s-p1" value="${S.people[1]}"></div></div>
+    <div class="frow"><div class="field"><label>名前 1</label><input class="finput" id="s-p0" value="${esc(S.people[0])}"></div>
+      <div class="field"><label>名前 2</label><input class="finput" id="s-p1" value="${esc(S.people[1])}"></div></div>
     <div class="field"><label>既定の入金(1人あたり)</label><input class="finput num" id="s-inc" inputmode="numeric" value="${S.defaultIncome}"></div>
     <div class="frow"><div class="field"><label>既定の賃料</label><input class="finput num" id="s-rent" inputmode="numeric" value="${S.defaultRent}"></div>
       <div class="field"><label>既定の管理費</label><input class="finput num" id="s-mgmt" inputmode="numeric" value="${S.defaultMgmt}"></div></div>
-    <div class="field"><label>既定の分類 <span class="hint">(カンマ区切り)</span></label><input class="finput" id="s-cats" value="${S.defaultCategories.join("、")}"></div>
+    <div class="field"><label>既定の分類 <span class="hint">(カンマ区切り)</span></label><input class="finput" id="s-cats" value="${esc(S.defaultCategories.join("、"))}"></div>
     <button class="sheetbtn" id="s-save">保存</button>
     <button class="sheetbtn ghost" id="s-csv">月別 CSV を書き出す（zip・Excel 用）</button>`);
   document.getElementById("s-save").addEventListener("click",()=>{
+    if(_writeBlocked()) return;
+    const a=_readAmt("s-inc",{allowEmpty:false}), b=_readAmt("s-rent",{allowEmpty:false}), c=_readAmt("s-mgmt",{allowEmpty:false});
+    if(!a.ok||!b.ok||!c.ok){ _focusFirstBad(); toast("入力を確認してください ⚠️","warn"); return; }
     S.people=[document.getElementById("s-p0").value||"太郎",document.getElementById("s-p1").value||"花子"];
-    S.defaultIncome=evalExpr(document.getElementById("s-inc").value)||100000;
-    S.defaultRent=evalExpr(document.getElementById("s-rent").value)||0;
-    S.defaultMgmt=evalExpr(document.getElementById("s-mgmt").value)||0;
+    S.defaultIncome=a.v; S.defaultRent=b.v; S.defaultMgmt=c.v;
     S.defaultCategories=document.getElementById("s-cats").value.split(/[、,]/).map(s=>s.trim()).filter(Boolean);
     save(); closeSheet(); render();
+    toast("設定を保存しました ✓");
   });
   document.getElementById("s-csv").addEventListener("click",exportCSV);
 }
@@ -677,16 +1171,25 @@ function exportCSV(){
   const blob = makeZip(entries);
   const url = URL.createObjectURL(blob), a = document.createElement("a");
   a.href = url; a.download = "We_帳簿.zip"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  toast("CSV(zip) を書き出しました ✓");
 }
 document.getElementById("btn-settings").addEventListener("click",openSettings);
 document.getElementById("btn-export").addEventListener("click",()=>{
   const blob=new Blob([JSON.stringify(db,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob); const a=document.createElement("a");
   a.href=url; a.download="we-kakeibo-backup.json"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  toast("バックアップ(JSON)を書き出しました ✓");
 });
 
 /* ---------------- renderers (logic verbatim; restyled markup + motion hooks) ---------------- */
-function renderHeader(){ if(_stripHesan()) save(); document.getElementById("monthlabel").textContent=labelOf(active); updateLastmod(); }
+function renderHeader(){
+  if(_stripHesan()) save();
+  _zoneLockedNow=_zoneLocked(); _renderZoneBar();
+  const now=_nowYM();
+  const chip = active<now ? '<span class="mchip past">過去</span>' : (active>now ? '<span class="mchip future">未来</span>' : '');
+  document.getElementById("monthlabel").innerHTML=esc(labelOf(active))+chip;
+  updateLastmod();
+}
 
 function renderRhythm(){
   const[y,m]=active.split("-").map(Number);
@@ -705,7 +1208,10 @@ function renderRhythm(){
 function renderOverview(){
   const k=active, mo=db.months[k], f=mo.fixed, h=hosho(k);
   const bal=balance(k);
-  const nowYM=new Date().getFullYear()+"-"+String(new Date().getMonth()+1).padStart(2,"0");
+  const nowYM=_nowYM();
+  const locked=_zoneLockedNow;
+  const kari=_isKari(k), carryMonth=_isCarryMonth(k);
+  const ed=(t,label)=>locked?'':`<button class="editlink" data-edit="${t}">${label||'編集'}</button>`;
   // 月末リマインダー: 当月かつ月末まで7日以内のときだけ表示。タップで精算を開く
   let remind="";
   if(isCurrentRealMonth(k)){
@@ -716,84 +1222,123 @@ function renderOverview(){
       remind=`<div class="carrynote remind-only"><div>${msg}</div></div>`;
     }
   }
+  // 仮の繰越金の知らせ(今月だけ・精算で確定すると消える)
+  const nag = (k===nowYM && kari) ? `<div class="carrynote nag"><div><b>${labelOf(k)}の精算がまだです。</b>繰越金 ${fmt(mo.start)} は仮の値（前月の残高に自動で追従）。精算で確定すると自動では変わらなくなります。</div></div>` : "";
+  const emptyRow=(label,v,extraCls)=>`<div class="row"><span class="k">${label}</span><span class="v num ${v==null?'empty':(extraCls||'')}">${v==null?'未入力':fmt(v)}</span></div>`;
   const fixedRows=`
-    <div class="row"><span class="k">賃料</span><span class="v num">${fmt(f.rent)}</span></div>
-    <div class="row"><span class="k">管理費</span><span class="v num">${fmt(f.mgmt)}</span></div>
-    <div class="row"><span class="k">電気</span><span class="v num ${f.denki==null?'empty':''}">${f.denki==null?'未入力':fmt(f.denki)}</span></div>
-    <div class="row"><span class="k">保証料+引落手数料 <small>自動</small></span><span class="v num ${h==null?'empty':'calc'}">${h==null?'未入力':fmt(h)}</span></div>
-    <div class="row"><span class="k">ガス</span><span class="v num ${f.gas==null?'empty':''}">${f.gas==null?'未入力':fmt(f.gas)}</span></div>
-    <div class="row"><span class="k">水道</span><span class="v num ${f.water==null?'empty':''}">${f.water==null?'未入力':fmt(f.water)}</span></div>
-    ${(f.extra||[]).map(x=>`<div class="row"><span class="k">${x.name}</span><span class="v num">${fmt(x.amount)}</span></div>`).join("")}`;
-  const varRows=mo.categories.map(c=>`<div class="row"><span class="k">${c}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
+    ${emptyRow('賃料',f.rent)}
+    ${emptyRow('管理費',f.mgmt)}
+    ${emptyRow('電気',f.denki)}
+    ${f.totalDebit!=null && f.denki==null
+      ? `<div class="row"><span class="k">引き落とし総額 <small>電気未入力・総額で計上</small></span><span class="v num calc">${fmt(f.totalDebit)}</span></div>`
+      : `<div class="row"><span class="k">保証料+引落手数料 <small>自動</small></span><span class="v num ${h==null?'empty':'calc'}">${h==null?'未入力':fmt(h)}</span></div>`}
+    ${emptyRow('ガス',f.gas)}
+    ${emptyRow('水道',f.water)}
+    ${(f.extra||[]).map(x=>`<div class="row"><span class="k">${esc(x.name)}</span><span class="v num ${x.amount==null?'empty':''}">${x.amount==null?'未入力':fmt(x.amount)}</span></div>`).join("")}`;
+  const varRows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
   const c=mo.cash, cr=cashRemain(k);
-  const cashCard=c?`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span><div class="right"><span class="tot num">${fmt(cr)}</span><button class="editlink" data-edit="cash">編集</button></div></div>
+  const unused=_cashUnusedSince();
+  const unusedRow = unused ? `<div class="row"><span class="k" style="color:var(--ink-3)">${labelOf(unused)}から現金の使用なし</span></div>` : "";
+  const cashCard=c?`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span><div class="right"><span class="tot num">${fmt(cr)}</span>${ed('cash')}</div></div>
       <div class="row"><span class="k">先月の現金残</span><span class="v num">${fmt(c.start)}</span></div>
       <div class="row"><span class="k">今月の引き出し</span><span class="v num">${fmt(c.deposit)}</span></div>
       <div class="row"><span class="k">今月の現金支出</span><span class="v num">${fmt(cashSpent(k))}</span></div>
-      <div class="row final"><span class="k">今月の現金残</span><span class="v num">${fmt(cr)}</span></div></div>`
-    :`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span><button class="editlink" data-edit="cash">追加</button></div><div class="row"><span class="k" style="color:var(--ink-3)">現金データなし</span></div></div>`;
+      <div class="row final"><span class="k">今月の現金残</span><span class="v num">${fmt(cr)}</span></div>${unusedRow}</div>`
+    :`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span>${ed('cash','追加')}</div><div class="row"><span class="k" style="color:var(--ink-3)">現金データなし</span></div></div>`;
+  // 精算ボタン: 今月・来月だけ。過去月は状態表示に変わる(タップで説明)
+  let hesanBtn="";
+  if(!locked){
+    if(carryMonth) hesanBtn=`<button class="balbtn ${kari?'urge':''}" id="open-hesan"><div class="txt"><b>精算する</b>(月末の計算)<br>${kari?'繰越金を確定してください':'手元のお金を計算して繰越金を合わせる'}</div><div class="go">›</div></button>`;
+    else hesanBtn=`<button class="balbtn past" id="hesan-past"><div class="txt"><b>精算 ${mo.startConfirmed?'済み ✓':'（自動の繰越金）'}</b><br>過去の月は精算できません。繰越金は「入金 / 繰越金」の編集から</div><div class="go">›</div></button>`;
+  }
+  const startChip = kari ? ' <span class="chip-kari">仮</span>' : ((mo.startConfirmed && carryMonth) ? ' <span class="chip-ok">確定</span>' : '');
 
   document.getElementById("v-overview").innerHTML=`
     ${renderRhythm()}
     <div class="hero"><div class="lbl">今月の残高</div>
       <div class="amt num"><span class="yen">¥</span><span id="hero-amt">${fmtN(bal)}</span></div>
-      <div class="sub num"><span class="in">入金 ${fmt(incomeTotal(k))}</span><i>·</i>支出 ${fmt(totalSpend(k))}</div></div>
-    <button class="balbtn" id="open-hesan"><div class="txt"><b>精算する</b>(月末の計算)<br>手元のお金を計算して繰越金を合わせる</div><div class="go">›</div></button>
+      <div class="sub num"><span class="in">入金 ${fmt(incomeTotal(k))}</span><i>·</i>支出 ${fmt(totalSpend(k))}</div>
+      ${kari?`<div class="kari">繰越 仮 ${fmt(mo.start)} — 精算で確定されます</div>`:''}</div>
+    ${hesanBtn}
+    ${nag}
     ${remind}
     <div class="stack">
-      <div class="card"><div class="head"><span class="t">固定費</span><div class="right"><span class="tot num">${fmt(fixedTotal(k))}</span><button class="editlink" data-edit="fixed">編集</button></div></div>${fixedRows}</div>
-      <div class="card"><div class="head"><span class="t">変動費</span><div class="right"><span class="tot num">${fmt(varTotal(k))}</span>${k>=nowYM?'<button class="editlink" id="edit-varcats">編集</button>':(mo.entries&&mo.entries.length?'<button class="editlink" data-edit="goentry">記帳へ</button>':'<button class="editlink" data-edit="vartot">編集</button>')}</div></div>${varRows}</div>
+      <div class="card"><div class="head"><span class="t">固定費</span><div class="right"><span class="tot num">${fmt(fixedTotal(k))}</span>${ed('fixed')}</div></div>${fixedRows}</div>
+      <div class="card"><div class="head"><span class="t">変動費</span><div class="right"><span class="tot num">${fmt(varTotal(k))}</span>${locked?'':(k>=nowYM?'<button class="editlink" id="edit-varcats">編集</button>':(mo.entries&&mo.entries.length?'<button class="editlink" data-edit="goentry">記帳へ</button>':'<button class="editlink" data-edit="vartot">編集</button>'))}</div></div>${varRows}</div>
       ${cashCard}
-      <div class="card"><div class="head"><span class="t">入金 / 繰越金</span><div class="right"><span class="tot num">${fmt(incomeTotal(k))}</span><button class="editlink" data-edit="income">編集</button></div></div>
-        ${mo.income.map(i=>`<div class="row"><span class="k">${i.who}</span><span class="v num">${fmt(i.amount)}</span></div>`).join("")}
-        <div class="row"><span class="k">前月繰越</span><span class="v num">${fmt(mo.start)}</span></div></div>
+      <div class="card"><div class="head"><span class="t">入金 / 繰越金</span><div class="right"><span class="tot num">${fmt(incomeTotal(k))}</span>${ed('income')}</div></div>
+        ${mo.income.map(i=>`<div class="row"><span class="k">${esc(i.who)}</span><span class="v num">${fmt(i.amount)}</span></div>`).join("")}
+        <div class="row"><span class="k">前月繰越${startChip}</span><span class="v num">${fmt(mo.start)}</span></div></div>
     </div>`;
   const heroEl=document.getElementById("hero-amt");
   if(heroEl){ if(_heroPrev!==null && _heroPrev!==Math.round(bal)) rollNumber(heroEl,_heroPrev,Math.round(bal)); _heroPrev=Math.round(bal); }
   document.getElementById("edit-varcats")?.addEventListener("click",()=>editVarCats());
+  document.getElementById("hesan-past")?.addEventListener("click",()=>openHesan());
 }
 let _heroPrev=null;
 
+let _qKeep=null;   // 記帳直後に日付・分類・現金の選択を保つ (BUG-20260901-15)
 function renderEntry(){
   const k=active, mo=db.months[k];
+  const locked=_zoneLockedNow;
   if(mo.migrated && !(mo.entries&&mo.entries.length)){
-    const rows=mo.categories.map(c=>`<div class="row"><span class="k">${c}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
+    const rows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
     document.getElementById("v-entry").innerHTML=`<div class="migbox"><div class="mh">この月は移行データです。日次の明細はありません。分類ごとの合計を編集できます。</div>
       <div class="card" style="box-shadow:none;border:none;padding:0">${rows}</div>
-      <button class="sheetbtn" id="go-vartot" style="margin-top:14px">合計を編集</button></div>`;
-    document.getElementById("go-vartot").addEventListener("click",editVarTotals); return;
+      ${locked?'':'<button class="sheetbtn" id="go-vartot" style="margin-top:14px">合計を編集</button>'}</div>`;
+    document.getElementById("go-vartot")?.addEventListener("click",editVarTotals); return;
   }
   const cats=mo.categories;
+  const cur=(k===_nowYM());
+  const keep=_qKeep; _qKeep=null;
   const [yQ,mQ]=k.split("-").map(Number); const qLast=new Date(yQ,mQ,0).getDate();
-  const qDefault=isCurrentRealMonth(k)?k+"-"+String(new Date().getDate()).padStart(2,"0"):k+"-01";
+  const todayStr=k+"-"+String(new Date().getDate()).padStart(2,"0");
+  const qDefault=keep?keep.date:(cur?todayStr:"");
   const qMin=k+"-01", qMax=k+"-"+String(qLast).padStart(2,"0");
-  let chips=cats.map((c,i)=>`<button class="chip ${i===0?'on':''}" data-c="${c}">${c}</button>`).join("");
+  const initCat=(keep && cats.includes(keep.cat))?keep.cat:cats[0];
+  let chips=cats.map(c=>`<button class="chip ${c===initCat?'on':''}" data-c="${esc(c)}">${esc(c)}</button>`).join("");
   const byDate={}; (mo.entries||[]).forEach(e=>{ (byDate[e.date]=byDate[e.date]||[]).push(e); });
   const dates=Object.keys(byDate).sort().reverse();
   const wd=["日","月","火","水","木","金","土"];
   let dayHtml=dates.map(d=>{
     const items=byDate[d]; const tot=items.reduce((a,e)=>a+e.amount,0);
     const dd=Number(d.split("-")[2]); const w=wd[new Date(d).getDay()];
-    const tags=items.map(e=>`<span class="tag ${e.cash?'cash':''}" data-eid="${e.id}">${e.category} ${fmt(e.amount)}${e.cash?' · 現':''}</span>`).join("");
+    const tags=items.map(e=>`<span class="tag ${e.cash?'cash':''}" data-eid="${e.id}">${esc(e.category)} ${fmt(e.amount)}${e.cash?' · 現':''}</span>`).join("");
     return `<div class="day"><div class="date"><div class="d num">${dd}</div><div class="w">${w}</div></div><div class="items">${tags}</div><div class="dtot num">${fmt(tot)}</div></div>`;
   }).join("");
-  if(!dates.length) dayHtml=`<div class="listhint">まだ記録がありません。上から追加できます。</div>`;
-  document.getElementById("v-entry").innerHTML=`
-    <div class="quickadd"><div class="qh">支出を追加</div>
+  if(!dates.length) dayHtml=`<div class="listhint">まだ記録がありません。${locked?'':'上から追加できます。'}</div>`;
+  const now=_nowYM(); const td=new Date();
+  const bar = cur ? "" : `<div class="entrybar"><span><b>${labelOf(k)}</b> に記帳します<small>（今日は ${td.getMonth()+1}/${td.getDate()}）</small></span><button class="mini" id="q-gonow">今月へ</button></div>`;
+  const quick = locked
+    ? `<div class="quickadd locknote"><div class="qh">🔒 記帳はロック中です</div><div class="desc" style="margin:0">今のエリアが東京ではありません。メモに残して、東京に戻ってから入力してください。</div></div>`
+    : `<div class="quickadd">${bar}<div class="qh">支出を追加</div>
       <div class="chips" id="chips">${chips}</div>
-      <div style="margin:2px 0 10px"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}"></div>
+      <div class="field" style="margin:2px 0 10px"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}">${cur?'':'<div class="qhint">日付を必ず選んでください</div>'}</div>
       <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="amtin" placeholder="0"></div>
-        <div class="cash-toggle" id="cashtog"><div class="switch"></div>現金</div></div>
-      <button class="addbtn" id="quick-add">追加する</button></div>
-    <div class="entry-list">${dayHtml}</div>`;
-  let qcat=cats[0], qcash=false;
+        <div class="cash-toggle ${keep&&keep.cash?'on':''}" id="cashtog"><div class="switch"></div>現金</div></div>
+      <button class="addbtn" id="quick-add">追加する</button></div>`;
+  document.getElementById("v-entry").innerHTML=`${quick}<div class="entry-list">${dayHtml}</div>`;
+  if(locked) return;
+  let qcat=initCat, qcash=!!(keep&&keep.cash);
+  document.getElementById("q-gonow")?.addEventListener("click",()=>{ _userNav=true; active=now; if(!db.months[now]) ensureMonth(now); render(); });
   document.getElementById("chips").addEventListener("click",e=>{ const c=e.target.closest(".chip"); if(!c)return; document.querySelectorAll("#chips .chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); qcat=c.dataset.c; });
   document.getElementById("cashtog").addEventListener("click",function(){ this.classList.toggle("on"); qcash=this.classList.contains("on"); });
   document.getElementById("quick-add").addEventListener("click",()=>{
-    const amt=evalExpr(document.getElementById("amtin").value); if(!amt) return;
-    const date=document.getElementById("qdate").value || qDefault;
+    if(_writeBlocked()) return;
+    const ra=_readAmt("amtin",{allowEmpty:false,allowZero:false,allowNegative:false});
+    const di=document.getElementById("qdate"); const date=di.value;
+    let bad=!ra.ok;
+    if(!date){ _markBad(di,"日付を選んでください ✏️"); bad=true; }
+    else if(date<qMin||date>qMax){ _markBad(di,labelOf(k)+" の日付を選んでください ✏️"); bad=true; }
+    if(bad){ _focusFirstBad(); return; }
+    const amt=ra.v;
     const m=db.months[k]; m.entries=m.entries||[];              // 追加の瞬間に取り直す
-    m.entries.push({id:"e"+Date.now(),date:date,category:qcat,amount:amt,cash:qcash?amt:0}); save(); render();
+    const id="e"+Date.now();
+    m.entries.push({id:id,date:date,category:qcat,amount:amt,cash:qcash?amt:0}); save();
+    _qKeep={date:date,cat:qcat,cash:qcash}; _lastAddedId=id;
+    render();
+    toast(_md(date)+" · "+qcat+" "+fmt(amt)+(qcash?"（現金）":"")+" を追加しました ✓");
+    _highlightEntry(id);
   });
   document.querySelectorAll("[data-eid]").forEach(t=>t.addEventListener("click",()=>editEntry(t.dataset.eid)));
 }
@@ -811,7 +1356,7 @@ function _donutHtml(k){
   data.forEach(x=>{ const len=x.v/total*C, dash=Math.max(0.01,len-GAP);
     segs+=`<circle class="ring-seg" cx="60" cy="60" r="${R}" stroke="${x.col}" stroke-width="14" stroke-dasharray="${dash.toFixed(2)} ${(C-dash).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"></circle>`;
     off+=len; });
-  const leg=data.map(x=>`<div class="li"><span class="sw" style="background:${x.col}"></span>${x.n}<span class="lv num">${fmt(x.v)} · ${Math.round(x.v/total*100)}%</span></div>`).join("");
+  const leg=data.map(x=>`<div class="li"><span class="sw" style="background:${x.col}"></span>${esc(x.n)}<span class="lv num">${fmt(x.v)} · ${Math.round(x.v/total*100)}%</span></div>`).join("");
   return `<div class="donut-wrap"><div class="donut"><svg viewBox="0 0 120 120" width="150" height="150"><circle class="ring-track" cx="60" cy="60" r="${R}" stroke-width="14"></circle>${segs}</svg><div class="ctr"><div class="cn num">${fmt(total)}</div><div class="cl">変動費</div></div></div><div class="donut-leg">${leg}</div></div>`;
 }
 
@@ -827,7 +1372,7 @@ function renderStats(){
   const cats=db.months[active].categories;
   const noCats=!cats.length;                                     // 2024-10(引越しアーカイブ月)は分類が無い
   if(!noCats && (!statCat||!cats.includes(statCat))) statCat=cats[0];
-  const catChips=noCats?"":cats.map(c=>`<button class="sc ${c===statCat?'on':''}" data-sc="${c}">${c}</button>`).join("");
+  const catChips=noCats?"":cats.map(c=>`<button class="sc ${c===statCat?'on':''}" data-sc="${esc(c)}">${esc(c)}</button>`).join("");
   let now=0, deltaHtml="";
   if(noCats){
     deltaHtml=`<div class="base">この月には分類がありません</div>`;
@@ -866,23 +1411,23 @@ function renderHistory(){
     const summary=`${keys.length}ヶ月 · 残高 ${fmt(balance(latest))}`;
     html+=`<div class="yr ${open?'open':''}" data-yr="${y}"><div class="yl"><span class="chev">›</span><span class="yy">${y}</span></div><div class="ys">${summary}</div></div>`;
     const rows=keys.map(k=>{ const m=k.split("-")[1]; const mo=db.months[k];
-      const tag=mo.migrated?(mo.entries&&mo.entries.length?'':'<small>移行データ・合計のみ</small>'):'<small>日次記帳</small>';
+      const tag=mo.migrated?(mo.entries&&mo.entries.length?'':'<small>移行データ・合計のみ</small>'):(_isKari(k)?'<small>日次記帳 · 繰越 仮</small>':'<small>日次記帳</small>');
       return `<div class="hrow ${k===active?'active':''}" data-go="${k}"><div class="m">${Number(m)}月 ${tag}</div><div class="bal"><div class="b num">${fmt(balance(k))}</div><div class="bl">残高</div></div></div>`;
     }).join("");
     html+=`<div class="yr-body ${open?'open':''}" data-yrbody="${y}">${rows}</div>`;
   });
   document.getElementById("v-history").innerHTML=`<div class="hist">${html}<div class="foot">全 ${all.length} ヶ月 · 年をタップで開閉 / 月をタップで編集</div></div>`;
   document.querySelectorAll("[data-yr]").forEach(h=>h.addEventListener("click",()=>{ const y=h.dataset.yr; if(_histOpenYears.has(y)) _histOpenYears.delete(y); else _histOpenYears.add(y); renderHistory(); }));
-  document.querySelectorAll("[data-go]").forEach(r=>r.addEventListener("click",()=>{ active=r.dataset.go; switchTab("overview"); }));
+  document.querySelectorAll("[data-go]").forEach(r=>r.addEventListener("click",()=>{ _userNav=true; active=r.dataset.go; switchTab("overview"); }));
 }
 
-/* 「最終更新 ○分前」の表示を定期的に更新 */
-setInterval(()=>{ try{ updateLastmod(); }catch(e){} }, 30000);
+/* 「最終更新 ○分前」の表示を定期的に更新 + 月替わり/ロックの再判定(午前 0 時の見張り) */
+setInterval(()=>{ try{ updateLastmod(); }catch(e){} try{ if(!_sheetOpen && !_hesanOpen && !_dlgOpen) ensureToday(); else { _zoneLockedNow=_zoneLocked(); _renderZoneBar(); } }catch(e){} }, 30000);
 
 /* ---------------- damping press feedback (pointer-driven, document-level so it survives re-renders) ---------------- */
 (function(){
-  var SEL=".iconbtn,.mnav button,.tab,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.hp-del,.balbtn,.addbtn,.sheetbtn,.hrow,.hero";
-  function _down(e){ var el=e.target.closest && e.target.closest(SEL); if(el) el.classList.add("pressing"); }
+  var SEL=".iconbtn,.mnav button,.tab,.editlink,.chip,.tag,.sc,.fil,.del,.addrow,.carrynote button,.hp-del,.balbtn,.addbtn,.sheetbtn,.hrow,.hero,.mini";
+  function _down(e){ var el=e.target.closest && e.target.closest(SEL); if(el && !el.disabled) el.classList.add("pressing"); }
   function _up(){ var els=document.querySelectorAll(".pressing"); for(var i=0;i<els.length;i++) els[i].classList.remove("pressing"); }
   document.addEventListener("pointerdown",_down,{passive:true});
   document.addEventListener("pointerup",_up,{passive:true});
