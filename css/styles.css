@@ -429,7 +429,7 @@ input{font-family:inherit;color:inherit}
 .hesanpage{
   position:fixed;inset:0;z-index:60;background:var(--bg);
   display:flex;flex-direction:column;height:100dvh;
-  will-change:transform;
+  overscroll-behavior:none;
 }
 .hp-top{
   display:flex;align-items:center;gap:12px;
@@ -442,7 +442,7 @@ input{font-family:inherit;color:inherit}
   font-size:11.5px;font-weight:600;color:var(--clay);background:var(--clay-soft);
   border:none;cursor:pointer;padding:8px 14px;border-radius:var(--r-pill);flex-shrink:0;
 }
-.hp-scroll{flex:1;overflow-y:auto;padding:2px 22px 18px;-webkit-overflow-scrolling:touch}
+.hp-scroll{flex:1;overflow-y:auto;padding:2px 22px 18px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .hp-scroll .desc{font-size:12.5px;color:var(--ink-2);margin-bottom:16px;line-height:1.55}
 .hp-mismatch{
   background:var(--accent-soft);color:var(--accent-ink);border-radius:var(--r-sm);
@@ -467,16 +467,26 @@ input{font-family:inherit;color:inherit}
    ============================================================ */
 
 /* ---------- フルページ編集 (REV-20260901-01): 右からスライド・端スワイプで戻る ---------- */
+/* 下の画面の固定: ページ/精算/ダイアログが開いている間 html に付く(位置固定は ui.js が body に inline で) */
+html.pglock{overflow:hidden}
+html.pglock body{overflow:hidden;overscroll-behavior:none}
 .edpage{
   position:fixed;inset:0;z-index:60;background:var(--bg);
   display:flex;flex-direction:column;height:100dvh;
-  will-change:transform;
+  overscroll-behavior:none;
 }
+/* 出入りの淡入淡出(編集ページ・精算ページ共通): 少し小さく・少し下から、ふわっと定位置へ */
+.edpage,.hesanpage{
+  opacity:0;transform:scale(.985) translateY(8px);will-change:opacity,transform;
+  transition:opacity .26s var(--ease-out),transform .36s var(--ease-out);
+}
+.edpage.on,.hesanpage.on{opacity:1;transform:none}
+.edpage.out,.hesanpage.out{opacity:0;transform:scale(.985) translateY(4px);transition:opacity .18s var(--ease),transform .18s var(--ease)}
 .edpage .hp-top{padding-bottom:6px}
 .edpage .sheet{
   /* .sheet の見た目(h2/desc/field…)は継承し、シートとしてのレイアウトだけ外す */
   width:auto;max-width:none;margin:0;background:transparent;border-radius:0;box-shadow:none;
-  max-height:none;padding:4px 22px 28px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;
+  max-height:none;padding:4px 22px 28px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;overscroll-behavior:contain;
 }
 .edpage .sheet h2{font-size:16px;margin:14px 0 6px}
 .ed-foot{
@@ -492,14 +502,14 @@ input{font-family:inherit;color:inherit}
 .dlg-ov{
   position:fixed;inset:0;z-index:80;background:rgba(36,33,28,0);
   display:flex;align-items:center;justify-content:center;padding:24px;
-  transition:background .2s var(--ease);
+  transition:background .22s var(--ease);
 }
 .dlg-ov.on{background:rgba(36,33,28,.34)}
 .dlg{
   width:100%;max-width:340px;margin:0;background:#F2EDE3;border-radius:var(--r-lg);
   padding:20px 20px 16px;max-height:none;overflow:visible;
   box-shadow:0 24px 60px rgba(43,40,37,.28);
-  transform:scale(.94) translateY(8px);opacity:0;transition:transform .32s var(--spring),opacity .2s var(--ease);
+  transform:scale(.96) translateY(6px);opacity:0;transition:transform .28s var(--ease-out),opacity .2s var(--ease-out);
 }
 .dlg-ov.on .dlg{transform:none;opacity:1}
 .dlg h2{font-size:16px;margin-bottom:6px}
