@@ -425,11 +425,11 @@ input{font-family:inherit;color:inherit}
 .vc-past{margin:2px 0 12px}
 .vc-past-h{font-size:11px;color:var(--ink-3);margin-bottom:8px;letter-spacing:.01em}
 
-/* ---------- 精算 フルページ (v9 トーン踏襲・タブバーより上に被せる) ---------- */
+/* ---------- 精算 フルページ (v9 トーン踏襲・タブバーより上に被せる・右からスライド) ---------- */
 .hesanpage{
   position:fixed;inset:0;z-index:60;background:var(--bg);
   display:flex;flex-direction:column;height:100dvh;
-  animation:viewin .3s var(--ease-out);
+  will-change:transform;
 }
 .hp-top{
   display:flex;align-items:center;gap:12px;
@@ -461,3 +461,135 @@ input{font-family:inherit;color:inherit}
   *{animation:none!important;transition-duration:.01ms!important}
   .view.on{animation:none}
 }
+
+/* ============================================================
+   2026-09-01 追加分 (HANDBOOK §13.10)
+   ============================================================ */
+
+/* ---------- フルページ編集 (REV-20260901-01): 右からスライド・端スワイプで戻る ---------- */
+.edpage{
+  position:fixed;inset:0;z-index:60;background:var(--bg);
+  display:flex;flex-direction:column;height:100dvh;
+  will-change:transform;
+}
+.edpage .hp-top{padding-bottom:6px}
+.edpage .sheet{
+  /* .sheet の見た目(h2/desc/field…)は継承し、シートとしてのレイアウトだけ外す */
+  width:auto;max-width:none;margin:0;background:transparent;border-radius:0;box-shadow:none;
+  max-height:none;padding:4px 22px 28px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;
+}
+.edpage .sheet h2{font-size:16px;margin:14px 0 6px}
+.ed-foot{
+  flex-shrink:0;padding:10px 18px calc(12px + env(safe-area-inset-bottom));
+  background:linear-gradient(rgba(239,234,225,0), var(--bg) 28%);
+}
+.ed-foot .sheetbtn{margin-top:0}
+.hp-title small{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-left:7px}
+.sheetbtn[disabled]{opacity:.45;filter:grayscale(.4);cursor:not-allowed;box-shadow:var(--sh-1)}
+.sheetbtn[disabled].pressing{transform:none}
+
+/* ---------- 中央の小さな確認ダイアログ ---------- */
+.dlg-ov{
+  position:fixed;inset:0;z-index:80;background:rgba(36,33,28,0);
+  display:flex;align-items:center;justify-content:center;padding:24px;
+  transition:background .2s var(--ease);
+}
+.dlg-ov.on{background:rgba(36,33,28,.34)}
+.dlg{
+  width:100%;max-width:340px;margin:0;background:#F2EDE3;border-radius:var(--r-lg);
+  padding:20px 20px 16px;max-height:none;overflow:visible;
+  box-shadow:0 24px 60px rgba(43,40,37,.28);
+  transform:scale(.94) translateY(8px);opacity:0;transition:transform .32s var(--spring),opacity .2s var(--ease);
+}
+.dlg-ov.on .dlg{transform:none;opacity:1}
+.dlg h2{font-size:16px;margin-bottom:6px}
+.dlg .desc{margin-bottom:14px}
+.dlg .sheetbtn{margin-top:8px;padding:13px;font-size:14px}
+
+/* ---------- 回執トースト (BUG-20260901-03) ---------- */
+.toast{
+  position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(14px);
+  z-index:100;max-width:calc(100% - 44px);background:var(--surface);color:var(--ink);
+  font-size:12.5px;font-weight:600;padding:11px 16px;border-radius:var(--r-pill);
+  box-shadow:var(--sh-2),0 0 16px -4px var(--iglow);opacity:0;pointer-events:none;
+  transition:opacity .25s var(--ease),transform .45s var(--spring);text-align:center;line-height:1.4;
+}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.warn{background:var(--clay-soft);color:var(--clay)}
+
+/* ---------- 入力エラー (BUG-20260901-08): 赤くしてふるえて、下に理由 ---------- */
+.finput.bad,.amt-in.bad{box-shadow:var(--inset),0 0 0 2px var(--clay)}
+.fielderr{
+  font-size:11.5px;color:var(--clay);background:var(--clay-soft);border-radius:var(--r-sm);
+  padding:7px 11px;margin:-6px 0 12px;line-height:1.45;font-weight:600;
+}
+.qrow + .fielderr{margin-top:10px}
+@keyframes shakeX{10%,90%{transform:translateX(-1.5px)}20%,80%{transform:translateX(2.5px)}30%,50%,70%{transform:translateX(-3px)}40%,60%{transform:translateX(3px)}}
+.shake{animation:shakeX .5s var(--ease)}
+
+/* ---------- 記帳の回執: 追加した日の行を一瞬ハイライト ---------- */
+.day.flash{box-shadow:var(--sh-1),0 0 0 2px var(--accent),0 0 18px -4px var(--iglow);transition:box-shadow .5s var(--ease)}
+
+/* ---------- 月ラベルの状態 (過去/未来) ---------- */
+.mchip{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.06em;vertical-align:2px;margin-left:6px;padding:2px 7px;border-radius:var(--r-pill)}
+.mchip.past{background:var(--surface-2);color:var(--ink-2)}
+.mchip.future{background:var(--accent-soft);color:var(--accent-ink)}
+
+/* ---------- 繰越金 仮/確定 (BUG-20260901-04) ---------- */
+.hero .kari{margin-top:10px;font-size:11.5px;color:var(--clay);font-weight:600;letter-spacing:.01em}
+.chip-kari{display:inline-block;font-size:10px;font-weight:700;color:var(--clay);background:var(--clay-soft);border-radius:var(--r-pill);padding:2px 8px;margin-left:6px;vertical-align:1px;letter-spacing:.04em}
+.chip-ok{display:inline-block;font-size:10px;font-weight:700;color:var(--sage);background:var(--sage-soft);border-radius:var(--r-pill);padding:2px 8px;margin-left:6px;vertical-align:1px;letter-spacing:.04em}
+.carrynote.nag{background:var(--clay-soft);color:var(--clay);justify-content:flex-start}
+.carrynote.nag b{color:var(--clay)}
+.balbtn.urge{box-shadow:var(--sh-2),0 0 0 2px var(--accent),0 0 22px -4px var(--iglow)}
+.balbtn.urge .go{animation:nudge 1.6s var(--ease) infinite}
+@keyframes nudge{0%,100%{transform:translateX(0)}50%{transform:translateX(3px)}}
+.balbtn.past{box-shadow:var(--sh-1);opacity:.9}
+.balbtn.past .txt{color:var(--ink-3)}
+.balbtn.past .txt b{color:var(--ink-2)}
+.balbtn.past .go{color:var(--ink-3)}
+
+/* ---------- 記帳: 今月以外への記帳の知らせ (BUG-20260901-02) ---------- */
+.entrybar{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin:-4px 0 14px;
+  background:var(--accent-soft);color:var(--accent-ink);border-radius:var(--r-sm);padding:10px 12px;font-size:12px;line-height:1.45;
+}
+.entrybar small{display:block;font-size:10.5px;color:var(--accent-ink);opacity:.8;font-weight:400}
+.mini{flex-shrink:0;font-size:11.5px;font-weight:700;border:none;background:var(--accent-grad);color:var(--accent-ink);border-radius:var(--r-pill);padding:7px 12px;cursor:pointer;box-shadow:0 0 12px -2px var(--iglow);transition:transform .3s var(--spring-sm)}
+.mini.pressing{transform:scale(.92)}
+.qhint{font-size:11px;color:var(--ink-3);text-align:center;margin-top:6px}
+
+/* ---------- 東京外ロック (REV-20260901-03) ---------- */
+.zonebar{
+  margin:8px 18px 4px;background:var(--clay-soft);color:var(--clay);border-radius:var(--r);padding:12px 14px;
+  font-size:12px;line-height:1.5;display:flex;gap:10px;align-items:flex-start;box-shadow:var(--sh-1);
+}
+.zonebar .zl{font-size:16px;line-height:1.2;flex-shrink:0}
+.zonebar b{color:var(--clay)}
+.quickadd.locknote{background:var(--surface-2);box-shadow:var(--inset)}
+.quickadd.locknote .desc{font-size:12px;color:var(--ink-2);line-height:1.5}
+
+/* ---------- 分類ページ (REV-20260901-02) ---------- */
+.vc-sec{margin-bottom:18px}
+.vc-h{font-size:11.5px;color:var(--ink-3);letter-spacing:.04em;font-weight:600;margin-bottom:10px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.vc-h small{font-weight:400;font-size:10.5px}
+.vc-empty{font-size:12px;color:var(--ink-3);padding:6px 0 4px}
+.vc-fixed{font-size:10px;color:var(--ink-3);background:var(--surface-2);border-radius:var(--r-pill);padding:2px 8px}
+.chip.sel{padding-right:12px}
+.chip.sel small{font-size:10px;margin-left:6px;opacity:.7;font-weight:400}
+.chip.sel.on small{opacity:.9}
+.mg-sum{font-size:14px;font-weight:700;background:var(--accent-soft);color:var(--accent-ink);border-radius:var(--r-sm);padding:12px 14px;margin:10px 0 12px;line-height:1.5}
+.mg-list{display:flex;flex-direction:column;gap:8px}
+.mg-row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;background:var(--surface);border-radius:var(--r-sm);padding:10px 12px;box-shadow:var(--sh-1)}
+.mg-row .mg-m{flex-shrink:0;font-weight:700;color:var(--ink-2)}
+.mg-row .mg-d{text-align:right;color:var(--ink);line-height:1.45}
+.mg-row .mg-d small{color:var(--ink-3);margin-left:6px}
+.mg-row .mg-d b{display:block;color:var(--clay);font-size:11.5px}
+.mg-row.both{background:var(--clay-soft);box-shadow:none}
+
+/* ---------- 精算ページ 追加 (BUG-20260901-12/-14, REV-04) ---------- */
+.hp-cashnote{font-size:11.5px;color:var(--ink-3);background:var(--surface-2);border-radius:var(--r-sm);padding:9px 12px;margin-bottom:12px}
+.hp-conflict{
+  background:var(--accent-soft);color:var(--accent-ink);border-radius:var(--r-sm);padding:11px 13px;font-size:12px;margin-bottom:14px;font-weight:600;line-height:1.5;
+}
+.hp-mismatch .chip{font-size:12px;padding:8px 12px}
