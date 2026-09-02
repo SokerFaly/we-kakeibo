@@ -475,13 +475,14 @@ html.pglock body{overflow:hidden;overscroll-behavior:none}
   display:flex;flex-direction:column;height:100dvh;
   overscroll-behavior:none;
 }
-/* 出入りの淡入淡出(編集ページ・精算ページ共通): 少し小さく・少し下から、ふわっと定位置へ */
+/* 出入りの淡入淡出(編集ページ・精算ページ共通): 少し小さく・少し下から、ゆっくり浮き上がって定位置へ
+   (2026-09-02 真機: 速すぎて動いて見えない → 入り 0.5s / 出 0.32s に) */
 .edpage,.hesanpage{
-  opacity:0;transform:scale(.985) translateY(8px);will-change:opacity,transform;
-  transition:opacity .26s var(--ease-out),transform .36s var(--ease-out);
+  opacity:0;transform:scale(.97) translateY(16px);will-change:opacity,transform;
+  transition:opacity .45s var(--ease-out),transform .6s var(--ease-out);
 }
 .edpage.on,.hesanpage.on{opacity:1;transform:none}
-.edpage.out,.hesanpage.out{opacity:0;transform:scale(.985) translateY(4px);transition:opacity .18s var(--ease),transform .18s var(--ease)}
+.edpage.out,.hesanpage.out{opacity:0;transform:scale(.975) translateY(10px);transition:opacity .32s var(--ease),transform .32s var(--ease)}
 .edpage .hp-top{padding-bottom:6px}
 .edpage .sheet{
   /* .sheet の見た目(h2/desc/field…)は継承し、シートとしてのレイアウトだけ外す */
@@ -502,14 +503,14 @@ html.pglock body{overflow:hidden;overscroll-behavior:none}
 .dlg-ov{
   position:fixed;inset:0;z-index:80;background:rgba(36,33,28,0);
   display:flex;align-items:center;justify-content:center;padding:24px;
-  transition:background .22s var(--ease);
+  transition:background .32s var(--ease);
 }
 .dlg-ov.on{background:rgba(36,33,28,.34)}
 .dlg{
   width:100%;max-width:340px;margin:0;background:#F2EDE3;border-radius:var(--r-lg);
   padding:20px 20px 16px;max-height:none;overflow:visible;
   box-shadow:0 24px 60px rgba(43,40,37,.28);
-  transform:scale(.96) translateY(6px);opacity:0;transition:transform .28s var(--ease-out),opacity .2s var(--ease-out);
+  transform:scale(.94) translateY(10px);opacity:0;transition:transform .42s var(--ease-out),opacity .3s var(--ease-out);
 }
 .dlg-ov.on .dlg{transform:none;opacity:1}
 .dlg h2{font-size:16px;margin-bottom:6px}
