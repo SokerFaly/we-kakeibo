@@ -1607,11 +1607,13 @@ function renderHistory(){
   let html="";
   yearOrder.forEach(y=>{
     const keys=byYear[y], open=_histOpenYears.has(y), latest=keys[0];   // keys降順 → [0]がその年の最新月
-    const summary=`${keys.length}ヶ月 · 残高 ${fmt(balance(latest))}`;
+    const summary=`${keys.length}ヶ月 · 残高`;
+    const yMax=Math.max(1, ...keys.map(k=>Math.abs(balance(k))));   // その年の最大残高（バーの基準）
     html+=`<div class="yr ${open?'open':''}" data-yr="${y}"><div class="yl"><span class="chev">›</span><span class="yy">${y}</span></div><div class="ys">${summary}</div></div>`;
     const rows=keys.map(k=>{ const m=k.split("-")[1]; const mo=db.months[k];
       const tag=mo.migrated?(mo.entries&&mo.entries.length?'':'<small>移行データ・合計のみ</small>'):(_isKari(k)?'<small>日次記帳 · 繰越 仮</small>':'<small>日次記帳</small>');
-      return `<div class="hrow ${k===active?'active':''}" data-go="${k}"><div class="m">${Number(m)}月 ${tag}</div><div class="bal"><div class="b num">${fmt(balance(k))}</div><div class="bl">残高</div></div></div>`;
+      const w=Math.max(0, Math.min(100, Math.abs(balance(k))/yMax*100));
+      return `<div class="hrow ${k===active?'active':''}" data-go="${k}"><div class="trk" style="width:${w.toFixed(1)}%"></div><div class="m">${Number(m)}月 ${tag}</div><div class="bal"><div class="b num">${fmt(balance(k))}</div></div></div>`;
     }).join("");
     html+=`<div class="yr-body ${open?'open':''}" data-yrbody="${y}">${rows}</div>`;
   });
