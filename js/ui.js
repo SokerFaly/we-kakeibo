@@ -37,6 +37,7 @@ function relTime(ts){
 }
 function updateLastmod(){
   const el = document.getElementById("lastmod"); if(!el) return;
+  el.className = "lastmod";                       // 同期状態のクラスは sync.js が付け直す
   if(!db.lastModified){ el.innerHTML = ""; return; }
   el.innerHTML = '<span class="dot"></span>最終更新 ' + relTime(db.lastModified);
 }
@@ -351,7 +352,7 @@ function _checkAmount(raw, opt){
   opt=opt||{};
   const s=String(raw==null?"":raw).trim();
   if(!s) return opt.allowEmpty ? {ok:true,v:null} : {ok:false,msg:"金額を入力してください ✏️"};
-  if(_RE_BAD.test(s)) return {ok:false,msg:"半角の数字だけでお願いします（カンマ・全角・¥ は使えません）✏️"};
+  if(_RE_BAD.test(s)) return {ok:false,msg:"半角の数字で入力してください（例: 1200）。カンマ・全角・¥ は使えません ✏️"};
   const v=evalExpr(s);
   if(v==null) return {ok:false,msg:"計算できませんでした。数字か 5349+890 のような式で ✏️"};
   if(v===0 && opt.allowZero===false) return {ok:false,msg:"0 円は記録できません ✏️"};
@@ -667,6 +668,74 @@ function _highlightEntry(id){
     if(day.scrollIntoView) try{ day.scrollIntoView({block:"center",behavior:"smooth"}); }catch(e){}
     setTimeout(()=>day.classList.remove("flash"), 1600); }, 40);
 }
+/* ============================================================
+   日付ピッカー (v11 · batch3)
+   方針: ネイティブの <input type="date"> は「値の持ち主」として残し、
+        見た目とタップだけを差し替える。
+        → di.value / min / max / _markBad / 保存時の守衛は一切変えない。
+   min/max は常に同じ月の 1 日〜末日なので、月送りは要らない。
+   ============================================================ */
+function _dateLabel(v){
+  if(!v) return "";
+  const [y,m,d]=v.split("-").map(Number);
+  return m+"月"+d+"日 ("+["日","月","火","水","木","金","土"][new Date(y,m-1,d).getDay()]+")";
+}
+/* 見た目のボタンだけを作る。input は呼び出し側にリテラルで置く
+   （id をソース上の literal に保つ = 関門4 が「その id は生成されるか」を静的に確認できる） */
+function _dfBtn(id, value){
+  return '<button type="button" class="dfbtn'+(value?'':' ph')+'" data-dfor="'+id+'">'
+    + '<span class="dfl">日付</span>'
+    + '<span class="dfv">'+(value?_dateLabel(value):"選んでください")+'</span>'
+    + '<span class="dfc">▾</span></button>';
+}
+function openDatePicker(id){
+  const inp=document.getElementById(id); if(!inp) return;
+  const min=inp.min||(active+"-01");
+  const key=min.slice(0,7);                              // min/max は同じ月なので月はここで決まる
+  const [y,m]=key.split("-").map(Number);
+  const days=new Date(y,m,0).getDate(), first=new Date(y,m,1).getDay();
+  const sel=inp.value, todayS=_todayStr();               // 今日は東京時間
+  const mo=db.months[key]||{};
+  const has={}; (mo.entries||[]).forEach(e=>{ has[String(e.date||"").slice(8,10)]=1; });
+  let cells="";
+  for(let i=0;i<first;i++) cells+='<div class="dy pad"></div>';
+  for(let d=1;d<=days;d++){
+    const ds=key+"-"+String(d).padStart(2,"0");
+    let c="dy";
+    if(ds===sel) c+=" sel"; else if(ds===todayS) c+=" today";
+    if(ds>todayS) c+=" fut";
+    let mk="";
+    if(d===PAYDAY) mk='<span class="mk pay"></span>';
+    else if(has[String(d).padStart(2,"0")]) mk='<span class="mk has"></span>';
+    cells+='<button type="button" class="'+c+'" data-pick="'+ds+'">'+d+mk+'</button>';
+  }
+  const showToday = todayS>=min && todayS<=(inp.max||todayS);
+  openDialog('<div class="cal">'
+    + '<div class="calttl">'+labelOf(key)+'</div>'
+    + '<div class="wk"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>'
+    + '<div class="days" id="dp-days">'+cells+'</div>'
+    + '<div class="callg"><span><i class="pay"></i>給料日</span><span><i class="has"></i>記帳あり</span></div>'
+    + (showToday?'<div class="calft"><button class="todaybtn" id="dp-today">今日へ</button></div>':'')
+    + '</div>');
+  const pick=(ds)=>{
+    inp.value=ds;
+    inp.dispatchEvent(new Event("input",{bubbles:true}));   // _markBad の解除もこれで走る
+    inp.dispatchEvent(new Event("change",{bubbles:true}));
+    const b=document.querySelector('.dfbtn[data-dfor="'+id+'"]');
+    if(b){ b.classList.remove("ph"); b.querySelector(".dfv").textContent=_dateLabel(ds); }
+    closeDialog();
+  };
+  document.getElementById("dp-days").addEventListener("click",e=>{
+    const t=e.target.closest("[data-pick]"); if(t) pick(t.dataset.pick);
+  });
+  document.getElementById("dp-today")?.addEventListener("click",()=>pick(todayS));
+}
+/* 差し替えたボタンはどの画面にも出るので、文書レベルで一度だけ束ねる */
+document.addEventListener("click",e=>{
+  const b=e.target.closest && e.target.closest(".dfbtn");
+  if(b) openDatePicker(b.dataset.dfor);
+});
+
 function _md(date){ const p=String(date||"").split("-"); return p.length===3 ? (Number(p[1])+"/"+Number(p[2])) : date; }
 function editEntry(id){
   const k0=active;
@@ -678,7 +747,7 @@ function editEntry(id){
   let chips=cats.map(c=>`<button class="chip ${e&&e.category===c?'on':(!e&&c===cats[0]?'on':'')}" data-c="${esc(c)}">${esc(c)}</button>`).join("");
   openSheet(`<h2>${e?"記録を編集":"記録を追加"} <small>${labelOf(k0)}</small></h2>
     ${!cur?`<div class="entrybar"><span>${labelOf(k0)} の記録です<small>（今日は ${_md(_todayStr())}）</small></span></div>`:''}
-    <div class="field"><label>日付${!cur?' <span class="hint">必ず選んでください</span>':''}</label><input class="finput" id="e-date" type="date" value="${eDefault}" min="${eMin}" max="${eMax}"></div>
+    <div class="field"><label>日付${!cur?' <span class="hint">必ず選んでください</span>':''}</label><div class="datefield"><input class="finput" type="date" id="e-date" value="${eDefault}" min="${eMin}" max="${eMax}">${_dfBtn("e-date",eDefault)}</div></div>
     <div class="field"><label>分類</label><div class="chips" id="e-chips">${chips}</div></div>
     <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="e-amt" placeholder="0" value="${e?e.amount:''}"></div>
       <div class="cash-toggle ${e&&e.cash?'on':''}" id="e-cash"><div class="switch"></div>現金</div></div>
@@ -975,6 +1044,7 @@ function openSettings(){
       <div class="field"><label>既定の管理費</label><input class="finput num" id="s-mgmt" inputmode="numeric" value="${S.defaultMgmt}"></div></div>
     <div class="field"><label>既定の分類 <span class="hint">(カンマ区切り)</span></label><input class="finput" id="s-cats" value="${esc(S.defaultCategories.join("、"))}"></div>
     <button class="sheetbtn" id="s-save">保存</button>
+    <button class="sheetbtn ghost" id="s-backup">JSON バックアップ（日付つきの控え）</button>
     <button class="sheetbtn ghost" id="s-csv">月別 CSV を書き出す（zip・Excel 用）</button>`);
   document.getElementById("s-save").addEventListener("click",async ()=>{
     const a=_readAmt("s-inc",{allowEmpty:false}), b=_readAmt("s-rent",{allowEmpty:false}), c=_readAmt("s-mgmt",{allowEmpty:false});
@@ -994,6 +1064,7 @@ function openSettings(){
     save(); closeSheet(); render();
     toast("設定を保存しました"+(applied.length?"（"+applied.map(labelOf).join("・")+" に適用）":"")+" ✓");
   });
+  document.getElementById("s-backup").addEventListener("click",exportBackup);
   document.getElementById("s-csv").addEventListener("click",exportCSV);
 }
 /* 既定値の変更をどの月から適用するか。戻り値: "now"|"next"|"none"(既存月は変えない)|null(やめる) */
@@ -1181,12 +1252,13 @@ function exportCSV(){
   toast("CSV(zip) を書き出しました ✓");
 }
 document.getElementById("btn-settings").addEventListener("click",openSettings);
-document.getElementById("btn-export").addEventListener("click",()=>{
+/* v11: ヘッダから設定ページへ移動（ほぼ押さないものが常時 2 つ並んでいた） */
+function exportBackup(){
   const blob=new Blob([JSON.stringify(db,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob); const a=document.createElement("a");
   a.href=url; a.download="we-kakeibo-backup.json"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   toast("バックアップ(JSON)を書き出しました ✓");
-});
+}
 
 /* ---------------- renderers (logic verbatim; restyled markup + motion hooks) ---------------- */
 function renderHeader(){
@@ -1203,14 +1275,112 @@ function renderRhythm(){
   const days=new Date(y,m,0).getDate(); const now=_nowYM(); const isCur=(active===now); const today=_todayD();
   const done=(active<now);                                     // 過去の月: 全部「走り終えた」
   let bars="";
+  const dow0=new Date(y,m-1,1).getDay();                        // その月の1日の曜日(0=日)
   for(let d=1;d<=days;d++){
     let cls="bar";
     if(d===PAYDAY) cls+=" payday";                                   // 給料日の黄色は常に残す
     if(isCur&&d===today) cls+=" today";                          // 10日と今日が重なっても両方付ける
     else if(isCur&&d<today&&d!==PAYDAY) cls+=" past";                 // 給料日は past にしない(従来通り)
+    if((dow0+d-1)%7===0 && d!==PAYDAY && !(isCur&&d===today)) cls+=" sun";  // 日曜だけ少し高く(週の区切り)
     bars+=`<div class="${cls}"></div>`;
   }
-  return `<div class="rhythm ${done?'done':''}"><div class="bars">${bars}</div><div class="labels"><span>1</span><span class="pay">${PAYDAY} 給料日</span><span>${days}</span></div></div>`;
+  return `<div class="rhythm ${done?'done':''}"><div class="bars">${bars}</div><div class="labels"><span>1</span><span class="pay" style="left:calc(1px + (100% - 2px) * ${(PAYDAY-0.5)/days})">${PAYDAY} 給料日</span><span>${days}</span></div></div>`;
+}
+
+/* ============================================================
+   概観モード (v11)
+   ・db は読むだけ。会計関数(compute.js)もそのまま呼ぶだけ。
+   ・図は「narrow question に 1 つ答える」ものだけ:
+       ① お金はどこへ行ったか(額度消耗) ② 使うペースは速いか遅いか ③ 何に使ったか
+   ============================================================ */
+let ovwMode = "viz";                    // "viz" | "list"（statFilter と同じ、端末内の表示設定）
+
+/* その月の変動費を「日ごとの累計」にする。entries が無い月は null（＝比較できない） */
+function _dailyCum(key){
+  const mo=db.months[key]; if(!mo||!mo.entries||!mo.entries.length) return null;
+  const [y,m]=key.split("-").map(Number), days=new Date(y,m,0).getDate();
+  const per=new Array(days+1).fill(0);
+  mo.entries.forEach(e=>{
+    const d=Number(String(e.date||"").slice(8,10));
+    if(d>=1&&d<=days) per[d]+=(e.amount||0);
+  });
+  const cum=[]; let t=0;
+  for(let d=1;d<=days;d++){ t+=per[d]; cum.push(t); }
+  return cum;
+}
+/* ペースの材料。予測は線形外挿（単純さを優先）。月初は不安定なので 7 日目まで出さない */
+function _paceData(key){
+  const cur=_dailyCum(key); if(!cur) return null;
+  const [y,m]=key.split("-").map(Number), days=new Date(y,m,0).getDate();
+  const isCur=(key===_nowYM());
+  const upto=isCur?Math.min(_todayD(),days):days;          // 過去月は月末まで
+  const prev=_dailyCum(shiftMonth(key,-1));                 // 先月に日次が無ければ null
+  const now=cur[upto-1]||0;
+  const prevAt=prev?(prev[Math.min(upto,prev.length)-1]||0):null;
+  const canProject = isCur && upto>=7 && upto<days;         // 月初と月末は予測を出さない
+  const proj = canProject ? Math.round(now/upto*days) : null;
+  return {cur,prev,days,upto,now,prevAt,proj,
+          projBal: proj==null?null:((db.months[key].start||0)+incomeTotal(key)-fixedTotal(key)-proj)};
+}
+function _spark(p){
+  const W=300,H=64, mx=Math.max(p.now, p.prevAt||0, ...(p.prev||[0]))||1;
+  const px=d=>((d-1)/Math.max(1,p.days-1))*W, py=v=>H-(v/mx)*(H-4);
+  const line=(arr,n)=>arr.slice(0,n).map((v,i)=>`${px(i+1).toFixed(1)},${py(v).toFixed(1)}`).join(" ");
+  const prevLine = p.prev ? `<polyline class="prev" points="${line(p.prev,p.prev.length)}"/>` : "";
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <line class="base" x1="0" y1="${H}" x2="${W}" y2="${H}"/>${prevLine}
+    <polyline class="now" points="${line(p.cur,p.upto)}"/>
+    <circle class="dot" cx="${px(p.upto).toFixed(1)}" cy="${py(p.now).toFixed(1)}" r="4"/></svg>`;
+}
+function _ovwViz(k){
+  const mo=db.months[k], avail=(mo.start||0)+incomeTotal(k);
+  const fx=fixedTotal(k), vr=varTotal(k), rest=avail-fx-vr;
+  const pct=v=>avail>0?Math.max(0,v/avail*100):0;
+  const pre=_isPrePayday(k);
+  /* ① お金の行き先 */
+  const flow=`<div class="sec-h"><span class="sec-t">今月のお金の行き先</span></div>
+    <div class="flow"><div class="flowtop"><span class="fl">使えるお金 <small>繰越 ＋ 入金</small></span>
+      <span class="fv num">${fmt(avail)}</span></div>
+      <div class="fbar"><i class="f1" style="width:${pct(fx)}%"></i><i class="f2" style="width:${pct(vr)}%"></i><i class="f3" style="width:${pct(rest)}%"></i></div>
+      <div class="flegend">
+        <div><span class="fsw s1"></span>固定費<b class="num">${fmt(fx)}</b><em>${pct(fx).toFixed(0)}%</em></div>
+        <div><span class="fsw s2"></span>変動費<b class="num">${fmt(vr)}</b><em>${pct(vr).toFixed(0)}%</em></div>
+        <div><span class="fsw s3"></span>残り<b class="num">${fmt(rest)}</b><em>${pct(rest).toFixed(0)}%</em></div>
+      </div>${pre?`<div class="flownote num">${PAYDAY}日に 入金 ${fmt(incomeTotal(k))} が入り、固定費 ${fmt(fx)} が引き落とされます</div>`:''}</div>`;
+  /* ② 支出のペース */
+  const p=_paceData(k);
+  let pace;
+  if(!p){
+    pace=`<div class="zero"><b>日ごとの記録がありません</b>この月は月ごとの合計だけです。日次記帳をすると、ここにペースが出ます。</div>`;
+  }else if(p.prevAt==null){
+    pace=`<div class="zero"><b>先月とは比べられません</b>先月は月ごとの合計だけで、日ごとの記録がありません。<br>日次記帳をした月どうしなら比べられます。</div>`;
+  }else{
+    const diff=p.prevAt-p.now, more=diff<0;
+    pace=`<div class="pace">${_spark(p)}
+      <div class="pacelb"><span>1日</span><span class="hi">${p.upto}日時点</span><span>${p.days}日</span></div>
+      <div class="pacelb"><span class="hi">—— 今月</span><span>- - - 先月</span></div></div>
+      <div class="verdict${more?' warn':''}">先月の同じ日より <span class="num">${fmt(Math.abs(diff))}</span> ${more?'多い':'少ない'}
+      ${p.proj!=null?`<small class="num">このペースだと月末の変動費は約 ${fmt(p.proj)}、残高は約 ${fmt(p.projBal)}</small>`:''}</div>`;
+  }
+  /* ③ 何に使ったか */
+  const PAL=["#9C8246","#AD786D","#997AA6","#628AA3","#548F8D","#87876E","#A97C53","#8E8289"];
+  const cd=mo.categories.map((c,i)=>({n:c,v:catAmount(k,c),col:PAL[i%PAL.length]})).filter(x=>x.v>0)
+           .sort((a,b)=>b.v-a.v);
+  const cs=cd.reduce((a,x)=>a+x.v,0);
+  const cats = cs<=0
+    ? `<div class="zero">今月はまだ変動費がありません。</div>`
+    : `<div class="cbar">${cd.map(x=>`<i style="width:${(x.v/cs*100).toFixed(1)}%;background:${x.col}"></i>`).join("")}</div>
+       <div class="clegend">${cd.map(x=>`<div class="ci"><span class="csw" style="background:${x.col}"></span>${esc(x.n)}
+         <span class="cv num">${fmt(x.v)}</span><span class="cp">${(x.v/cs*100).toFixed(0)}%</span></div>`).join("")}</div>`;
+  const cr2=cashRemain(k);
+  return `<div class="stack">
+    <div class="sec">${flow}</div>
+    <div class="sec"><div class="sec-h"><span class="sec-t">支出のペース</span></div>${pace}</div>
+    <div class="sec"><div class="sec-h"><span class="sec-t">何に使ったか</span><span class="sec-v num">${fmt(vr)}</span></div>${cats}</div>
+    ${cr2!=null?`<div class="sec"><div class="sec-h"><span class="sec-t">現金（サブ台帳）</span><span class="sec-v num">${fmt(cr2)}</span>
+      <button class="editlink" data-edit="cash">編集</button></div>
+      <div class="row"><span class="k" style="color:var(--ink-3)">残高の計算には入りません</span></div></div>`:''}
+  </div>`;
 }
 
 function renderOverview(){
@@ -1234,28 +1404,32 @@ function renderOverview(){
       remind=`<div class="carrynote remind-only"><div>${msg}</div></div>`;
     }
   }
+  // 概観 / リストの切替（既定は概観。端末内だけの表示設定で、データには入らない）
+  const ovwSwitch=`<div class="modes" id="ovw-modes">
+    <button class="md${ovwMode==="viz"?" on":""}" data-ovw="viz">概観</button>
+    <button class="md${ovwMode==="list"?" on":""}" data-ovw="list">リスト</button></div>`;
   // 仮の繰越金の知らせ(今月だけ・精算で確定すると消える)
   const nag = (k===nowYM && kari) ? `<div class="carrynote nag"><div><b>${labelOf(k)}の精算がまだです。</b>繰越金 ${fmt(mo.start)} は仮の値（前月の残高に自動で追従）。精算で確定すると自動では変わらなくなります。</div></div>` : "";
-  const emptyRow=(label,v,extraCls)=>`<div class="row"><span class="k">${label}</span><span class="v num ${v==null?'empty':((extraCls||'')+dimCls)}">${v==null?'未入力':fmt(v)}</span></div>`;
+  const emptyRow=(label,v,extraCls)=>`<div class="row"><span class="k">${label}</span><span class="v num ${v==null?'empty':((extraCls||'')+dimCls)}">${v==null?'未入力':fmtN(v)}</span></div>`;
   const fixedRows=`
     ${emptyRow('賃料',f.rent)}
     ${emptyRow('管理費',f.mgmt)}
     ${emptyRow('電気',f.denki)}
     ${f.totalDebit!=null && f.denki==null
-      ? `<div class="row"><span class="k">引き落とし総額 <small>電気未入力・総額で計上</small></span><span class="v num calc">${fmt(f.totalDebit)}</span></div>`
-      : `<div class="row"><span class="k">保証料+引落手数料 <small>自動</small></span><span class="v num ${h==null?'empty':('calc'+dimCls)}">${h==null?'未入力':fmt(h)}</span></div>`}
+      ? `<div class="row"><span class="k">引き落とし総額 <small>電気未入力・総額で計上</small></span><span class="v num calc">${fmtN(f.totalDebit)}</span></div>`
+      : `<div class="row"><span class="k">保証料+引落手数料 <small>自動</small></span><span class="v num ${h==null?'empty':('calc'+dimCls)}">${h==null?'未入力':fmtN(h)}</span></div>`}
     ${emptyRow('ガス',f.gas)}
     ${emptyRow('水道',f.water)}
-    ${(f.extra||[]).map(x=>`<div class="row"><span class="k">${esc(x.name)}</span><span class="v num ${x.amount==null?'empty':dimCls}">${x.amount==null?'未入力':fmt(x.amount)}</span></div>`).join("")}`;
-  const varRows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
+    ${(f.extra||[]).map(x=>`<div class="row"><span class="k">${esc(x.name)}</span><span class="v num ${x.amount==null?'empty':dimCls}">${x.amount==null?'未入力':fmtN(x.amount)}</span></div>`).join("")}`;
+  const varRows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmtN(catAmount(k,c))}</span></div>`).join("");
   const c=mo.cash, cr=cashRemain(k);
   const unused=_cashUnusedSince();
   const unusedRow = unused ? `<div class="row"><span class="k" style="color:var(--ink-3)">${labelOf(unused)}から現金の使用なし</span></div>` : "";
   const cashCard=c?`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span><div class="right"><span class="tot num">${fmt(cr)}</span>${ed('cash')}</div></div>
-      <div class="row"><span class="k">先月の現金残</span><span class="v num">${fmt(c.start)}</span></div>
-      <div class="row"><span class="k">今月の引き出し</span><span class="v num">${fmt(c.deposit)}</span></div>
-      <div class="row"><span class="k">今月の現金支出</span><span class="v num">${fmt(cashSpent(k))}</span></div>
-      <div class="row final"><span class="k">今月の現金残</span><span class="v num">${fmt(cr)}</span></div>${unusedRow}</div>`
+      <div class="row"><span class="k">先月の現金残</span><span class="v num">${fmtN(c.start)}</span></div>
+      <div class="row"><span class="k">今月の引き出し</span><span class="v num">${fmtN(c.deposit)}</span></div>
+      <div class="row"><span class="k">今月の現金支出</span><span class="v num">${fmtN(cashSpent(k))}</span></div>
+      <div class="row final"><span class="k">今月の現金残</span><span class="v num">${fmtN(cr)}</span></div>${unusedRow}</div>`
     :`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span>${ed('cash','追加')}</div><div class="row"><span class="k" style="color:var(--ink-3)">現金データなし</span></div></div>`;
   // 精算ボタン: 今月・来月だけ。過去月は状態表示に変わる(タップで説明)
   let hesanBtn="";
@@ -1275,16 +1449,21 @@ function renderOverview(){
     ${hesanBtn}
     ${nag}
     ${remind}
+    ${ovwSwitch}
+    ${ovwMode==="viz" ? _ovwViz(k) : `
     <div class="stack">
       <div class="card"><div class="head"><span class="t">固定費</span><div class="right"><span class="tot num">${pre?'¥0':fmt(fixedTotal(k))}${soon(fixedTotal(k))}</span>${ed('fixed')}</div></div>${fixedRows}</div>
       <div class="card"><div class="head"><span class="t">変動費</span><div class="right"><span class="tot num">${fmt(varTotal(k))}</span>${(k>=nowYM?'<button class="editlink" id="edit-varcats">編集</button>':(mo.entries&&mo.entries.length?'<button class="editlink" data-edit="goentry">記帳へ</button>':'<button class="editlink" data-edit="vartot">編集</button>'))}</div></div>${varRows}</div>
       ${cashCard}
       <div class="card"><div class="head"><span class="t">入金 / 繰越金</span><div class="right"><span class="tot num">${pre?'¥0':fmt(incomeTotal(k))}${soon(incomeTotal(k))}</span>${ed('income')}</div></div>
-        ${mo.income.map(i=>`<div class="row"><span class="k">${esc(i.who)}</span><span class="v num${dimCls}">${fmt(i.amount)}</span></div>`).join("")}
-        <div class="row"><span class="k">前月繰越${startChip}</span><span class="v num">${fmt(mo.start)}</span></div></div>
-    </div>`;
+        ${mo.income.map(i=>`<div class="row"><span class="k">${esc(i.who)}</span><span class="v num${dimCls}">${fmtN(i.amount)}</span></div>`).join("")}
+        <div class="row"><span class="k">前月繰越${startChip}</span><span class="v num">${fmtN(mo.start)}</span></div></div>
+    </div>`}`;
   const heroEl=document.getElementById("hero-amt"); const shown=Math.round(pre?preBal:bal);
   if(heroEl){ if(_heroPrev!==null && _heroPrev!==shown) rollNumber(heroEl,_heroPrev,shown); _heroPrev=shown; }
+  document.querySelectorAll("#ovw-modes .md").forEach(b=>b.addEventListener("click",()=>{
+    if(ovwMode===b.dataset.ovw) return; ovwMode=b.dataset.ovw; render();
+  }));
   document.getElementById("edit-varcats")?.addEventListener("click",()=>editVarCats());
   document.getElementById("hesan-past")?.addEventListener("click",()=>openHesan());
 }
@@ -1294,7 +1473,7 @@ let _qKeep=null;   // 記帳直後に日付・分類・現金の選択を保つ 
 function renderEntry(){
   const k=active, mo=db.months[k];
   if(mo.migrated && !(mo.entries&&mo.entries.length)){
-    const rows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmt(catAmount(k,c))}</span></div>`).join("");
+    const rows=mo.categories.map(c=>`<div class="row"><span class="k">${esc(c)}</span><span class="v num">${fmtN(catAmount(k,c))}</span></div>`).join("");
     document.getElementById("v-entry").innerHTML=`<div class="migbox"><div class="mh">この月は移行データです。日次の明細はありません。分類ごとの合計を編集できます。</div>
       <div class="card" style="box-shadow:none;border:none;padding:0">${rows}</div>
       <button class="sheetbtn" id="go-vartot" style="margin-top:14px">合計を編集</button></div>`;
@@ -1318,12 +1497,12 @@ function renderEntry(){
     const tags=items.map(e=>`<span class="tag ${e.cash?'cash':''}" data-eid="${e.id}">${esc(e.category)} ${fmt(e.amount)}${e.cash?' · 現':''}</span>`).join("");
     return `<div class="day"><div class="date"><div class="d num">${dd}</div><div class="w">${w}</div></div><div class="items">${tags}</div><div class="dtot num">${fmt(tot)}</div></div>`;
   }).join("");
-  if(!dates.length) dayHtml=`<div class="listhint">まだ記録がありません。上から追加できます。</div>`;
+  if(!dates.length) dayHtml=`<div class="zero"><b>${labelOf(active)}の記録はまだありません</b>分類を選んで金額を入れると、ここに日ごとに並びます。</div>`;
   const now=_nowYM();
   const bar = cur ? "" : `<div class="entrybar"><span><b>${labelOf(k)}</b> に記帳します<small>（今日は ${_md(_todayStr())}）</small></span><button class="mini" id="q-gonow">今月へ</button></div>`;
   const quick = `<div class="quickadd">${bar}<div class="qh">支出を追加</div>
       <div class="chips" id="chips">${chips}</div>
-      <div class="field" style="margin:2px 0 10px"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}">${cur?'':'<div class="qhint">日付を必ず選んでください</div>'}</div>
+      <div class="field" style="margin:2px 0 10px"><div class="datefield"><input class="finput" type="date" id="qdate" value="${qDefault}" min="${qMin}" max="${qMax}">${_dfBtn("qdate",qDefault)}</div>${cur?'':'<div class="qhint">日付を必ず選んでください</div>'}</div>
       <div class="qrow"><div class="amt-in"><span>¥</span><input inputmode="numeric" id="amtin" placeholder="0"></div>
         <div class="cash-toggle ${keep&&keep.cash?'on':''}" id="cashtog"><div class="switch"></div>現金</div></div>
       <button class="addbtn" id="quick-add">追加する</button></div>`;
@@ -1356,7 +1535,9 @@ let statFilter="half", statCat=null;
 /* ---------------- 淡彩 環形グラフ (当月の変動費・分類別、零依存 SVG) ---------------- */
 function _donutHtml(k){
   const mo=db.months[k], cats=mo.categories;
-  const PAL=["#E6B14E","#8FA98E","#CDA088","#A6AFBB","#C9A86A","#9DAE8C","#D4B08C","#B0A99A"];
+  /* 分類色 v11: 日本の伝統色ベース・低彩度。全て surface(#F8F5F0) に対し対比 3.4 で揃えてある。
+     芥子色 / 蘇芳鼠 / 藤鼠 / 藍鼠 / 錆浅葱 / 利休鼠 / 丁子 / 鳩羽鼠 */
+  const PAL=["#9C8246","#AD786D","#997AA6","#628AA3","#548F8D","#87876E","#A97C53","#8E8289"];
   const data=cats.map(c=>({n:c,v:catAmount(k,c),col:PAL[cats.indexOf(c)%PAL.length]})).filter(x=>x.v>0);
   const total=data.reduce((a,x)=>a+x.v,0);
   if(total<=0) return '<div class="donut-empty">変動費の記録がまだありません</div>';
