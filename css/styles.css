@@ -537,12 +537,24 @@ input{font-family:inherit;color:inherit}
   border-top:1px solid var(--hair);
   display:flex;justify-content:space-between;align-items:center;font-weight:600;
 }
-.hesanrow{display:flex;gap:var(--hrow-gap);align-items:center;margin-bottom:10px}
+/* v11: 1 行 = 1 つの溝。左のラベルが「押せるボタン」に見えていたのを直す
+   （中の input は透明にして、外側の .hslot が溝を担う） */
+.hesanrow{display:flex;align-items:center;gap:0;margin-bottom:8px}
+.hesanrow .hslot{flex:1;min-width:0;display:flex;align-items:center;
+  background:var(--well-bg);border-radius:var(--r-well);box-shadow:var(--well);padding:0 14px;
+  transition:box-shadow var(--t-1) var(--e-out)}
+.hesanrow .hi{border:none;background:transparent;box-shadow:none;outline:none;color:var(--ink);
+  padding:12px 0;font-size:15px;min-width:0}
+.hesanrow .hl-edit{width:86px;flex:none;font-size:13px;color:var(--ink-2);
+  border-right:1px solid rgba(150,140,120,.22);margin-right:12px;padding-right:10px}
+.hesanrow .hi:not(.hl-edit){flex:1;text-align:right;font-size:17px;font-weight:700;
+  font-variant-numeric:tabular-nums}
+.hesanrow:focus-within .hslot{box-shadow:var(--well),0 0 0 2px var(--accent)}
 .hesanrow .hl{width:80px;flex-shrink:0;font-size:12px;color:var(--ink)}
-.hesanrow .hi{flex:1;min-width:0;border:none;background:var(--bg);border-radius:var(--r-sm);padding:11px 13px;font-size:14px;outline:none;color:var(--ink);box-shadow:var(--inset);transition:box-shadow .2s var(--ease)}
-.hesanrow .hi:focus{box-shadow:var(--inset),0 0 0 2px var(--accent)}
-.hesanrow .hl-edit{background:none}
-.hesanrow .he{width:var(--he-w);text-align:right;font-size:13px;color:var(--ink-2);flex-shrink:0;font-variant-numeric:tabular-nums}
+.hesanrow .he{width:var(--he-w);text-align:right;font-size:13px;color:var(--ink-3);flex-shrink:0;
+  font-variant-numeric:tabular-nums;padding-left:8px}
+.hzhint{font-size:11px;color:var(--ink-3);margin:0 0 8px 2px}
+.hzhint b{color:var(--ink-2);font-weight:700}
 .del{flex:none;width:27px;height:27px;border-radius:50%;border:none;background:transparent;color:var(--ink-3);cursor:pointer;font-size:15px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
 .del:hover,.del:active{background:var(--clay-soft);color:var(--clay)}
 .htotal{display:flex;justify-content:space-between;align-items:center;padding:14px 2px;border-top:1px solid var(--hair);margin-top:6px;font-weight:700;font-size:14px}
