@@ -1295,6 +1295,7 @@ function renderRhythm(){
        ① お金はどこへ行ったか(額度消耗) ② 使うペースは速いか遅いか ③ 何に使ったか
    ============================================================ */
 let ovwMode = "viz";                    // "viz" | "list"（statFilter と同じ、端末内の表示設定）
+let _ovwSwap=false;                     // 人が切り替えた時だけ true。render() は保存や同期でも走るので毎回は動かさない
 
 /* その月の変動費を「日ごとの累計」にする。entries が無い月は null（＝比較できない） */
 function _dailyCum(key){
@@ -1463,8 +1464,15 @@ function renderOverview(){
   const heroEl=document.getElementById("hero-amt"); const shown=Math.round(pre?preBal:bal);
   if(heroEl){ if(_heroPrev!==null && _heroPrev!==shown) rollNumber(heroEl,_heroPrev,shown); _heroPrev=shown; }
   document.querySelectorAll("#ovw-modes .md").forEach(b=>b.addEventListener("click",()=>{
-    if(ovwMode===b.dataset.ovw) return; ovwMode=b.dataset.ovw; render();
+    if(ovwMode===b.dataset.ovw) return; ovwMode=b.dataset.ovw; _ovwSwap=true; render();
   }));
+  if(_ovwSwap){                                  // 切替の瞬間だけ animate（描画のたびには動かさない）
+    _ovwSwap=false;
+    if(!REDUCED){
+      document.querySelector("#ovw-modes .md.on")?.classList.add("mdpop");
+      document.querySelector("#v-overview .stack")?.classList.add("swapin");
+    }
+  }
   document.getElementById("edit-varcats")?.addEventListener("click",()=>editVarCats());
   document.getElementById("hesan-past")?.addEventListener("click",()=>openHesan());
 }
