@@ -238,14 +238,17 @@ if (typeof document !== "undefined") (function(){
 
   /* ---- 状態バッジ: updateLastmod を包んで「最終更新…」の後ろに付ける ---- */
   const _updateLastmod = (typeof updateLastmod==="function") ? updateLastmod : null;
-  function statusText(){ return ({syncing:"同期中…", synced:"同期済", offline:"オフライン", noauth:"未設定"}[STATUS]) || ""; }
+  /* v11: オフラインは「圏外です」より先に「データは無事」と言う。不安を消すのが本体 */
+  function statusText(){ return ({syncing:"同期中…", synced:"同期済",
+    offline:"オフライン · 端末に保存済み", noauth:"同期できません"}[STATUS]) || ""; }
   if(_updateLastmod){
     updateLastmod = function(){
       _updateLastmod.apply(this, arguments);
       const el=document.getElementById("lastmod"); if(!el || !configured()) return;
-      const col = (STATUS==="offline") ? "#b3541e" : (STATUS==="syncing" ? "#9a8f7a" : "#5b7a52");
+      /* v11: 色は styles.css の token に任せる（ここに hex を書かない） */
+      el.className = "lastmod st-" + STATUS;
       const sep = el.innerHTML ? " · " : '<span class="dot"></span>';
-      el.innerHTML += sep + '<span style="color:'+col+'">' + statusText() + '</span>';
+      el.innerHTML += sep + '<span class="stx">' + statusText() + '</span>';
     };
   }
   function setStatus(s){ STATUS=s; if(typeof updateLastmod==="function") updateLastmod(); }
