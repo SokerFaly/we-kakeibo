@@ -17,6 +17,7 @@
   --ink-2:#6E6759;
   --ink-3:#8C8574;         /* v11: 2.15 → 3.37 (WCAG) */
   --hair:#E4DFD3;
+  --well-bg:#E8E2D6;      /* 入力の溝の面。--bg より一段暗くして「掘られている」ことを見せる */
   --line:rgba(43,40,37,.05);
 
   /* yellow accent (gradient) + readable semantic colors */
@@ -408,6 +409,13 @@ input{font-family:inherit;color:inherit}
 .hist .yr-body.open{background:var(--surface);border-radius:var(--r-lg);
   box-shadow:var(--sh-2),var(--edge);overflow:hidden;margin-bottom:4px}
 .hrow + .hrow{border-top:1px solid var(--hair)}
+/* v11 A 案: その年の最大残高に対する比率を行の背景に敷く（金色は給料日の専用ではあるが、
+   履歴タブには節奏条が無いので同一画面での競合は起きない） */
+.hrow{position:relative;overflow:hidden}
+.hrow .trk{position:absolute;left:0;top:0;bottom:0;background:rgba(230,177,78,.13);
+  z-index:0;border-radius:0 6px 6px 0;transition:width var(--t-4) var(--e-out)}
+.hrow > .m,.hrow > .bal{position:relative;z-index:1}
+.hrow.active .trk{background:rgba(230,177,78,.2)}
 .hrow.active{box-shadow:inset 0 0 0 2px var(--accent),0 0 16px -4px var(--iglow);border-radius:12px;
   position:relative;z-index:1;border-top-color:transparent}
 .hrow.active + .hrow{border-top-color:transparent}
