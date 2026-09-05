@@ -866,8 +866,8 @@ function openHesan(force){
   }
 
   function carry(){ const m=M(); return (m&&m.start!=null)?m.start:0; }
-  function rowRight(expr){ const v=_hesanNum(expr); if(v==null) return '未入力'; return /[+\-*/]/.test(String(expr)) ? fmtN(v) : ''; }
-  function rowHtml(r,i){ return `<div class="hesanrow"><input class="hi hl-edit" data-hl="${i}" value="${esc(r.label)}"><input class="hi" data-he="${i}" value="${esc(r.expr||'')}" placeholder="例: 5349+890"><span class="he">${rowRight(r.expr)}</span><button class="del" data-del="${i}">×</button></div>`; }
+  function rowRight(expr){ const v=_hesanNum(expr); if(v==null) return '—'; return /[+\-*/]/.test(String(expr)) ? fmtN(v) : ''; }
+  function rowHtml(r,i){ return `<div class="hesanrow"><div class="hslot"><input class="hi hl-edit" data-hl="${i}" value="${esc(r.label)}"><input class="hi" data-he="${i}" value="${esc(r.expr||'')}" inputmode="decimal"></div><span class="he">${rowRight(r.expr)}</span><button class="del" data-del="${i}">×</button></div>`; }
   function calcTotal(){ let t=0; rows.forEach(r=>{ const v=_hesanNum(r.expr); if(v!=null) t+=v; }); return t; }
   function initSuggest(total){ const yz=_hesanNum(yzExpr); return yz==null?null:Math.round(total-yz); }
   function diffHtml(total){
@@ -896,15 +896,16 @@ function openHesan(force){
       <button class="hp-del" id="hp-deldraft">下書きを削除</button>
     </div>
     <div class="hp-scroll">
-      <div class="desc">手元のお金を計算して、今月の<b>初期金額</b>(繰越金)を出します。記帳データとは連動しません。各欄は <b>5349+890</b> のように式で書けます。下書きは自動保存されます。</div>
+      <div class="desc">手元のお金を数えて、今月の<b>初期金額</b>(繰越金)を出します。記帳データとは連動しません。下書きは自動保存されます。</div>
       ${cashNote?`<div class="hp-cashnote">${labelOf(cashNote)}から現金の使用なし（現金残 ${fmt(cashRemain(monthsAsc().slice(-1)[0]))}）</div>`:``}
       ${mm ? `<div class="hp-mismatch">この下書きは ${labelOf(draftMonth)} のものです。このまま${labelOf(key)}の繰越金には設定できません。<div class="frow" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="chip on" id="hp-gomonth">${labelOf(draftMonth)}へ移動して設定</button><button class="chip" id="hp-dropdraft">下書きを削除して${labelOf(key)}を始める</button></div></div>` : ``}
       <div id="hp-conflict"></div>
+      <div class="hzhint">金額は <b>5349+890</b> のように式でも書けます</div>
       <div id="he-rows">${rows.map(rowHtml).join("")}</div>
       <button class="addrow" id="he-add">+ 行を追加</button>
       <div class="htotal"><span>実際に残ったお金</span><span class="num" id="he-total">${fmt(t)}</span></div>
       <div class="htotal" style="border-top:1px dashed var(--hair)"><span style="color:var(--ink-2)">今月の繰越金 <small style="font-weight:400;color:var(--ink-3)">${(m&&!m.startConfirmed)?'仮・前月残高に自動追従':'確定済'}</small></span><span class="num" style="color:var(--ink-2)">${fmt(carry())}</span></div>
-      <div class="field" style="margin:10px 0 2px"><label>${esc(P[1])}残高 <span class="hint">手入力</span></label><input class="finput num" id="he-yeon" inputmode="numeric" value="${esc(yzExpr)}" placeholder="理論上 残るはずの金額"></div>
+      <div class="field" style="margin:10px 0 2px"><label>${esc(P[1])}残高 <span class="hint">手入力</span></label><input class="finput num" id="he-yeon" inputmode="numeric" value="${esc(yzExpr)}" placeholder="例: 12000"></div>
       <div id="he-diffbox">${diffHtml(t)}</div>
       <div class="field" style="margin:10px 0 2px"><label>初期金額（今月の繰越金 ＋ 差額） <span class="hint" id="he-init-hint">${initHint(t)}</span></label><input class="finput num" id="he-init" inputmode="numeric" value="${esc(initExpr)}" placeholder="${initPh(t)}"></div>
       <div style="height:8px"></div>
