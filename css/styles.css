@@ -618,6 +618,11 @@ input{font-family:inherit;color:inherit}
   color:var(--ink-3);font-weight:600;background:transparent;cursor:pointer;white-space:nowrap;
   transition:background var(--t-2) var(--e-out),color var(--t-2) var(--e-out),box-shadow var(--t-2) var(--e-out)}
 .modes .md.on{background:var(--surface);color:var(--ink);font-weight:700;box-shadow:var(--sh-1),var(--edge)}
+/* v11: 切り替えた瞬間だけ動く。選んだ側は軽く弾み、中身は下から入れ替わる */
+.modes .md.mdpop{animation:mdpop var(--t-3) var(--e-snap)}
+@keyframes mdpop{from{transform:scale(.94)}to{transform:none}}
+#v-overview .stack.swapin{animation:swapin var(--t-3) var(--e-out)}
+@keyframes swapin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
 /* セクション（容器なし・見出しに罫線） */
 .sec{margin-bottom:0}
