@@ -1435,7 +1435,7 @@ function renderOverview(){
     :`<div class="card cash"><div class="head"><span class="t">現金 <span class="chip-pay">サブ</span></span>${ed('cash','追加')}</div><div class="row"><span class="k" style="color:var(--ink-3)">現金データなし</span></div></div>`;
   // 精算ボタン: 今月・来月だけ。過去月は状態表示に変わる(タップで説明)
   let hesanBtn="";
-  if(carryMonth) hesanBtn=`<button class="balbtn ${kari?'urge':''}" id="open-hesan"><div class="txt"><b>精算する</b>(月末の計算)<br>${kari?'繰越金を確定してください':'手元のお金を計算して繰越金を合わせる'}</div><div class="go">›</div></button>`;
+  if(carryMonth) hesanBtn=`<button class="balbtn ${kari?'urge':''}" id="open-hesan"><div class="txt"><b>精算する</b>(${Number(k.split("-")[1])}月の繰越金を決める)<br>${kari?'繰越金を確定してください':'手元のお金を計算して繰越金を合わせる'}</div><div class="go">›</div></button>`;
   else hesanBtn=`<button class="balbtn past" id="hesan-past"><div class="txt"><b>精算 ${mo.startConfirmed?'済み ✓':'（自動の繰越金）'}</b><br>過去の月は精算できません。繰越金は「入金 / 繰越金」の編集から</div><div class="go">›</div></button>`;
   const startChip = kari ? ' <span class="chip-kari">仮</span>' : ((mo.startConfirmed && carryMonth) ? ' <span class="chip-ok">確定</span>' : '');
 
